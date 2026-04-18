@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="folio-project" content="{{PROJECT_NAME}}">
+<title>{{PROJECT_NAME}}</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="stylesheet" href="/ui/dashboard.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="sidebar-project" id="project-name">Folio</div>
+
+    <div class="sidebar-label">Browse</div>
+    <button class="sidebar-tab active" onclick="setSection('screens', this)">Screens</button>
+    <button class="sidebar-tab" onclick="setSection('components', this)">Components</button>
+    <button class="sidebar-tab" onclick="setSection('flows', this)">Flows</button>
+
+    <div style="margin-top: 20px;">
+      <div class="sidebar-label">Tools</div>
+      <button class="sidebar-tab" onclick="showSystemTab()">System</button>
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <main class="main">
+    <div class="main-header">
+      <span class="main-title" id="main-title">Screens</span>
+      <button class="btn btn-primary" id="new-item-btn" onclick="openNewItemModal()">+ New screen</button>
+    </div>
+    <div id="items-container"></div>
+  </main>
+
+</div>
+
+<!-- Preview drawer -->
+<div id="preview-drawer" style="
+  position:fixed; top:0; right:-440px; width:420px; height:100vh;
+  background:var(--surface); border-left:1px solid var(--border);
+  display:flex; flex-direction:column; z-index:200;
+  transition:right 0.22s ease; box-shadow:-4px 0 24px rgba(0,0,0,0.3);
+">
+  <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border);flex-shrink:0">
+    <span id="preview-drawer-title" style="font-size:13px;font-weight:600;color:var(--text-primary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+    <button id="preview-newtab-btn" class="btn" onclick="previewNewTab()" title="Open in new tab">↗</button>
+    <button class="btn" onclick="closePreviewDrawer()" title="Close">✕</button>
+  </div>
+  <iframe id="preview-iframe" src="" style="flex:1;border:none;background:#fff"></iframe>
+</div>
+<div id="preview-backdrop" onclick="closePreviewDrawer()" style="display:none;position:fixed;inset:0;z-index:199"></div>
+
+<!-- Modal -->
+<div class="modal-backdrop" id="modal-backdrop" onclick="closeModal(event)">
+  <div class="modal" id="modal">
+    <div class="modal-header">
+      <span class="modal-title" id="modal-title"></span>
+      <button class="modal-close" onclick="closeModalDirect()">×</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-footer" id="modal-footer"></div>
+  </div>
+</div>
+
+<script src="/ui/dashboard.js" defer></script>
+</body>
+</html>

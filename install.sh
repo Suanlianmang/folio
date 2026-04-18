@@ -15,6 +15,10 @@ mkdir -p "$HOME/.folio/bin"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cp "$SCRIPT_DIR"/*.py "$HOME/.folio/lib/"
 cp "$SCRIPT_DIR/system.md" "$HOME/.folio/lib/system.md"
+mkdir -p "$HOME/.folio/lib/ui"
+cp "$SCRIPT_DIR"/ui/*.html "$HOME/.folio/lib/ui/"
+cp "$SCRIPT_DIR"/ui/*.css  "$HOME/.folio/lib/ui/"
+cp "$SCRIPT_DIR"/ui/*.js   "$HOME/.folio/lib/ui/"
 
 # Write the folio wrapper script.
 cat > "$HOME/.folio/bin/folio" <<'EOF'
