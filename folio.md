@@ -39,6 +39,24 @@ folio init
 
 ---
 
+## Step 2.5 — Ensure server is running
+
+```bash
+curl -s http://localhost:7842/api/status > /dev/null 2>&1 && echo "running" || echo "stopped"
+```
+
+- `running` → skip.
+- `stopped` → start in background:
+
+```bash
+folio serve &
+sleep 1
+```
+
+Do not tell the user unless the server was just started. If started, say: "Dashboard running at http://localhost:7842"
+
+---
+
 ## Step 3 — Load state
 
 ```bash

@@ -159,6 +159,10 @@ class FolioHandler(BaseHTTPRequestHandler):
             self._serve_dashboard()
             return
 
+        if path == "/api/status":
+            self._send_json({"status": "ok"})
+            return
+
         match = _RE_UI.match(path)
         if match:
             self._serve_static(_UI_DIR / match.group(1))
