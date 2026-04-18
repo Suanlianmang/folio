@@ -8,7 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+.python-version
 
 # Folio per-project data
+.folio/
 design.db
 screenshots/

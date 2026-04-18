@@ -1,26 +1,45 @@
 """
-server.py — Folio Flask dashboard. Run from host project root:
+server.py — Folio dashboard. Run from host project root:
     python3 tools/folio/server.py
 """
 
-import os
-import sys
+import atexit
 import json
+import mimetypes
+import os
+import re
+import signal
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+_PID_FILE = Path.home() / ".folio" / "server.pid"
+
+
+def _write_pid() -> None:
+    _PID_FILE.write_text(str(os.getpid()))
+
+
+def _remove_pid() -> None:
+    _PID_FILE.unlink(missing_ok=True)
+
+
+def _handle_signal(sig, frame) -> None:
+    _remove_pid()
+    sys.exit(0)
 
 # ---------------------------------------------------------------------------
-# Path setup — db.py lives in the same directory as this file
+# Path setup — db.py lives in the folio lib directory
 # ---------------------------------------------------------------------------
 
-_FOLIO_DIR = os.path.dirname(os.path.abspath(__file__))
-if _FOLIO_DIR not in sys.path:
-    sys.path.insert(0, _FOLIO_DIR)
+_FOLIO_LIB = str(Path.home() / ".folio" / "lib")
+if _FOLIO_LIB not in sys.path:
+    sys.path.insert(0, _FOLIO_LIB)
 
 import db
-from flask import Flask, request, jsonify, send_from_directory, abort
 
-db.configure(os.getcwd())
-
-app = Flask(__name__)
+db.configure(Path.cwd())
 
 # ---------------------------------------------------------------------------
 # Dashboard HTML — single inline string, no templates directory
@@ -37,12 +56,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg:             #f7f6f4;
-    --surface:        #ffffff;
-    --border:         #e8e6e2;
-    --text-primary:   #1a1a1a;
-    --text-secondary: #888580;
-    --text-muted:     #c0bdb8;
+    --bg:             #131518;
+    --surface:        #1b1e24;
+    --border:         #2a2f3a;
+    --text-primary:   #ede6d8;
+    --text-secondary: #a8a8bc;
+    --text-muted:     #68687c;
     --sidebar-width:  220px;
     --radius:         6px;
     --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
@@ -156,7 +175,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     color: var(--surface);
     border-color: var(--text-primary);
   }
-  .btn-primary:hover { background: #333; }
+  .btn-primary:hover { background: #d4c4a0; }
 
   .btn-ghost {
     background: none;
@@ -172,7 +191,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     color: var(--text-muted);
     padding: 4px 7px;
   }
-  .btn-danger:hover { color: #c0392b; background: #fdf0ef; }
+  .btn-danger:hover { color: #b07878; background: #231820; }
 
   /* ---------- cards ---------- */
 
@@ -224,8 +243,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     background-repeat: no-repeat;
     background-position: right 5px center;
   }
-  .status-select.status-approved    { color: #4a7c59; border-color: #b6d9c3; background-color: #f0f8f3; }
-  .status-select.status-finalised   { color: #2c5282; border-color: #b0c8e8; background-color: #ebf2fb; }
+  .status-select.status-approved    { color: #6aaa84; border-color: #28443a; background-color: #151d1a; }
+  .status-select.status-finalised   { color: #6890b8; border-color: #243050; background-color: #141a28; }
   .status-select.status-exploring   { color: var(--text-secondary); }
 
   .card-meta {
@@ -294,6 +313,66 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     align-items: center;
     gap: 8px;
     padding: 0 16px 12px;
+  }
+
+  /* ---------- used-in / linked-screens ---------- */
+
+  .linked-section {
+    padding: 8px 16px 0;
+  }
+
+  .linked-heading {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+  }
+
+  .linked-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+
+  .linked-tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 100px;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    background: var(--bg);
+  }
+
+  /* ---------- flow screen tree ---------- */
+
+  .screen-tree {
+    padding: 8px 16px 0;
+  }
+
+  .screen-tree-heading {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+  }
+
+  .screen-tree-list {
+    list-style: none;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+  }
+
+  .screen-tree-list li {
+    padding: 2px 0;
+  }
+
+  .screen-tree-children {
+    list-style: none;
+    padding-left: 16px;
   }
 
   /* ---------- empty state ---------- */
@@ -377,7 +456,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .form-input:focus, .form-select:focus, .form-textarea:focus {
     outline: none;
-    border-color: #aaa;
+    border-color: #7a6050;
   }
 
   .form-textarea {
@@ -440,6 +519,131 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     color: var(--text-secondary);
   }
   .system-content li { margin-bottom: 3px; }
+
+  /* ---------- flow tree ---------- */
+  .flow-tree-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .flow-tree-zoom { display: flex; gap: 4px; }
+  .flow-tree-zoom button {
+    width: 28px; height: 28px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-primary);
+    font-size: 14px;
+    cursor: pointer;
+    font-family: var(--font);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .flow-tree-zoom button:hover { background: var(--bg); }
+
+  .flow-tree-view {
+    position: relative;
+    width: 100%;
+    height: calc(100vh - 120px);
+    overflow: hidden;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: grab;
+    user-select: none;
+  }
+  .flow-tree-view.grabbing { cursor: grabbing; }
+
+  .flow-tree-canvas {
+    position: absolute;
+    top: 0; left: 0;
+    transform-origin: 0 0;
+  }
+
+  .flow-tree-svg {
+    position: absolute;
+    top: 0; left: 0;
+    pointer-events: none;
+    overflow: visible;
+  }
+
+  .flow-node {
+    position: absolute;
+    width: 200px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  }
+  .flow-node.status-approved  { border-color: #38604a; }
+  .flow-node.status-finalised { border-color: #2e5070; }
+
+  .flow-node-thumb {
+    position: relative;
+    width: 200px;
+    height: 120px;
+    overflow: hidden;
+    background: #0e1014;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .flow-node-thumb-scale {
+    width: 800px;
+    height: 480px;
+    transform: scale(0.25);
+    transform-origin: 0 0;
+    margin-right: -600px;
+    margin-bottom: -360px;
+    pointer-events: none;
+  }
+  .flow-node-thumb-scale iframe {
+    width: 800px;
+    height: 480px;
+    border: none;
+    display: block;
+  }
+  .flow-node-thumb-open {
+    position: absolute;
+    top: 6px; right: 6px;
+    background: rgba(20,22,28,0.75);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 10px;
+    padding: 2px 6px;
+    cursor: pointer;
+    font-family: var(--font);
+    z-index: 1;
+  }
+  .flow-node-thumb-open:hover { color: var(--text-primary); }
+
+  .flow-node-info {
+    padding: 7px 10px 9px;
+  }
+  .flow-node-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 4px;
+  }
+  .flow-node-status {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 100px;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    background: var(--bg);
+    display: inline-block;
+    text-transform: lowercase;
+  }
+  .flow-node-status.status-approved  { color: #6aaa84; border-color: #28443a; background: #151d1a; }
+  .flow-node-status.status-finalised { color: #6890b8; border-color: #243050; background: #141a28; }
+
+  #preview-drawer.open { right: 0; }
 </style>
 </head>
 <body>
@@ -450,11 +654,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="sidebar-project" id="project-name">Folio</div>
 
     <div class="sidebar-label">Browse</div>
-    <button class="sidebar-tab active" data-filter="null" onclick="setFilter(null, this)">All</button>
-    <button class="sidebar-tab" data-filter="screen" onclick="setFilter('screen', this)">Screens</button>
-    <button class="sidebar-tab" data-filter="layout" onclick="setFilter('layout', this)">Layouts</button>
-    <button class="sidebar-tab" data-filter="component" onclick="setFilter('component', this)">Components</button>
-    <button class="sidebar-tab" data-filter="flow" onclick="setFilter('flow', this)">Flows</button>
+    <button class="sidebar-tab active" onclick="setSection('screens', this)">Screens</button>
+    <button class="sidebar-tab" onclick="setSection('components', this)">Components</button>
+    <button class="sidebar-tab" onclick="setSection('flows', this)">Flows</button>
 
     <div style="margin-top: 20px;">
       <div class="sidebar-label">Tools</div>
@@ -465,13 +667,29 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <!-- Main -->
   <main class="main">
     <div class="main-header">
-      <span class="main-title" id="main-title">All Items</span>
-      <button class="btn btn-primary" onclick="openNewItemModal()">+ New item</button>
+      <span class="main-title" id="main-title">Screens</span>
+      <button class="btn btn-primary" id="new-item-btn" onclick="openNewItemModal()">+ New screen</button>
     </div>
     <div id="items-container"></div>
   </main>
 
 </div>
+
+<!-- Preview drawer -->
+<div id="preview-drawer" style="
+  position:fixed; top:0; right:-440px; width:420px; height:100vh;
+  background:var(--surface); border-left:1px solid var(--border);
+  display:flex; flex-direction:column; z-index:200;
+  transition:right 0.22s ease; box-shadow:-4px 0 24px rgba(0,0,0,0.3);
+">
+  <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border);flex-shrink:0">
+    <span id="preview-drawer-title" style="font-size:13px;font-weight:600;color:var(--text-primary);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+    <button id="preview-newtab-btn" class="btn" onclick="previewNewTab()" title="Open in new tab">↗</button>
+    <button class="btn" onclick="closePreviewDrawer()" title="Close">✕</button>
+  </div>
+  <iframe id="preview-iframe" src="" style="flex:1;border:none;background:#fff"></iframe>
+</div>
+<div id="preview-backdrop" onclick="closePreviewDrawer()" style="display:none;position:fixed;inset:0;z-index:199"></div>
 
 <!-- Modal -->
 <div class="modal-backdrop" id="modal-backdrop" onclick="closeModal(event)">
@@ -491,9 +709,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 // ---------------------------------------------------------------------------
 
 const state = {
-  items:        [],
-  filter:       null,  // null = all, or type string
-  activeTab:    'items',
+  section: 'screens',  // 'screens' | 'components' | 'flows'
+  items: [],
+  treeFlowId: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -502,122 +720,303 @@ const state = {
 
 window.addEventListener('DOMContentLoaded', () => {
   const titleEl = document.getElementById('project-name');
-  const cwd     = window.PROJECT_NAME || document.title;
-  titleEl.textContent = cwd;
-
-  loadItems();
+  titleEl.textContent = window.PROJECT_NAME || 'Folio';
+  loadSection();
 });
 
 // ---------------------------------------------------------------------------
 // Data loading
 // ---------------------------------------------------------------------------
 
-async function loadItems() {
-  const url = state.filter ? `/api/items?type=${state.filter}` : '/api/items';
-  const res = await fetch(url);
-  if (!res.ok) { console.error('Failed to load items', res.status); return; }
+async function loadSection() {
+  const res = await fetch(`/api/${state.section}`);
+  if (!res.ok) { console.error('Failed to load section', res.status); return; }
   state.items = await res.json();
-  renderItems();
+  renderSection();
 }
 
 // ---------------------------------------------------------------------------
-// Filter
+// Section switching
 // ---------------------------------------------------------------------------
 
-const FILTER_LABELS = {
-  null:       'All Items',
-  screen:     'Screens',
-  layout:     'Layouts',
-  component:  'Components',
-  flow:       'Flows',
-};
-
-function setFilter(type, buttonEl) {
-  state.filter    = type;
-  state.activeTab = 'items';
-
+function setSection(section, btn) {
+  state.section = section;
   document.querySelectorAll('.sidebar-tab').forEach(b => b.classList.remove('active'));
-  buttonEl.classList.add('active');
-  document.getElementById('main-title').textContent = FILTER_LABELS[type] || 'All Items';
+  btn.classList.add('active');
 
-  loadItems();
+  const titles = { screens: 'Screens', components: 'Components', flows: 'Flows' };
+  document.getElementById('main-title').textContent = titles[section];
+
+  const singular = section.slice(0, -1);
+  document.getElementById('new-item-btn').textContent = `+ New ${singular}`;
+
+  loadSection();
 }
 
 function showSystemTab() {
-  state.activeTab = 'system';
-
   document.querySelectorAll('.sidebar-tab').forEach(b => b.classList.remove('active'));
   event.target.classList.add('active');
   document.getElementById('main-title').textContent = 'System';
-
   renderSystem();
 }
 
 // ---------------------------------------------------------------------------
-// Rendering — items
+// Rendering — dispatch
 // ---------------------------------------------------------------------------
 
-function renderItems() {
+function renderSection() {
+  if (state.section === 'screens')    { renderScreens();    return; }
+  if (state.section === 'components') { renderComponents(); return; }
+  if (state.section === 'flows')      { renderFlows();      return; }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering — screens
+// ---------------------------------------------------------------------------
+
+function renderScreens() {
   const container = document.getElementById('items-container');
   if (state.items.length === 0) {
     container.innerHTML = `
       <div class="empty-state">
-        <p>No items yet.</p>
-        <button class="btn btn-primary" onclick="openNewItemModal()">+ New item</button>
+        <p>No screens yet.</p>
+        <button class="btn btn-primary" onclick="openNewItemModal()">+ New screen</button>
       </div>`;
     return;
   }
-  container.innerHTML = state.items.map(renderCard).join('');
+  container.innerHTML = state.items.map(renderScreenCard).join('');
 }
 
-function renderCard(item) {
+function renderScreenCard(item) {
   const meta = [item.description, item.usage].filter(Boolean).join(' · ');
   const metaHtml = meta
     ? `<div class="card-meta">${escHtml(meta)}</div>`
     : '';
 
-  const variantsHtml = renderVariants(item);
+  const parentHtml = item.parent_id
+    ? `<div class="card-meta" style="color:var(--text-muted);font-size:11px;">&#8627; child of #${item.parent_id}</div>`
+    : '';
+
+  const variantsHtml = renderVariants(item, 'screen');
+
+  const selectedFile = item.selected_file || null;
+  const previewBtn = selectedFile
+    ? `<button class="btn btn-ghost" onclick="previewFile('${escAttr(selectedFile)}')">Preview selected</button>`
+    : '';
 
   return `
   <div class="card" id="card-${item.id}">
     <div class="card-header">
       <span class="card-name">${escHtml(item.name)}</span>
-      <span class="type-badge">${escHtml(item.type)}</span>
       <select class="status-select status-${item.status}"
               onchange="updateStatus(${item.id}, this)">
         <option value="exploring"  ${item.status === 'exploring'  ? 'selected' : ''}>exploring</option>
         <option value="approved"   ${item.status === 'approved'   ? 'selected' : ''}>approved</option>
         <option value="finalised"  ${item.status === 'finalised'  ? 'selected' : ''}>finalised</option>
       </select>
-      <button class="btn-danger btn" onclick="deleteItem(${item.id})" title="Delete item">✕</button>
+      <button class="btn-danger btn" onclick="deleteEntity(${item.id})" title="Delete">&#x2715;</button>
     </div>
     ${metaHtml}
+    ${parentHtml}
     <div class="variants-section">
       ${variantsHtml}
     </div>
     <div class="card-footer">
       <button class="btn" onclick="openAddVariantModal(${item.id})">+ Variant</button>
-      ${item.selected_file
-        ? `<button class="btn btn-ghost" onclick="previewFile('${escAttr(item.selected_file)}')">Preview selected</button>`
-        : ''}
+      ${previewBtn}
     </div>
   </div>`;
 }
 
-function renderVariants(item) {
-  if (!item.variants || item.variants.length === 0) {
+// ---------------------------------------------------------------------------
+// Rendering — components
+// ---------------------------------------------------------------------------
+
+function renderComponents() {
+  const container = document.getElementById('items-container');
+  if (state.items.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <p>No components yet.</p>
+        <button class="btn btn-primary" onclick="openNewItemModal()">+ New component</button>
+      </div>`;
+    return;
+  }
+  container.innerHTML = state.items.map(renderComponentCard).join('');
+}
+
+function renderComponentCard(item) {
+  const meta = [item.description, item.usage].filter(Boolean).join(' · ');
+  const metaHtml = meta
+    ? `<div class="card-meta">${escHtml(meta)}</div>`
+    : '';
+
+  const usedIn = item.used_in || [];
+  const usedInHtml = usedIn.length > 0
+    ? `<div class="linked-tags">${usedIn.map(s => `<span class="linked-tag">${escHtml(s.name)}</span>`).join('')}</div>`
+    : `<div style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">Not linked to any screen</div>`;
+
+  const variantsHtml = renderVariants(item, 'component');
+
+  const selectedFile = item.selected_file || null;
+  const previewBtn = selectedFile
+    ? `<button class="btn btn-ghost" onclick="previewFile('${escAttr(selectedFile)}')">Preview selected</button>`
+    : '';
+
+  return `
+  <div class="card" id="card-${item.id}">
+    <div class="card-header">
+      <span class="card-name">${escHtml(item.name)}</span>
+      <select class="status-select status-${item.status}"
+              onchange="updateStatus(${item.id}, this)">
+        <option value="exploring"  ${item.status === 'exploring'  ? 'selected' : ''}>exploring</option>
+        <option value="approved"   ${item.status === 'approved'   ? 'selected' : ''}>approved</option>
+        <option value="finalised"  ${item.status === 'finalised'  ? 'selected' : ''}>finalised</option>
+      </select>
+      <button class="btn-danger btn" onclick="deleteEntity(${item.id})" title="Delete">&#x2715;</button>
+    </div>
+    ${metaHtml}
+    <div class="linked-section">
+      <div class="linked-heading">Used in</div>
+      ${usedInHtml}
+    </div>
+    <div class="variants-section">
+      ${variantsHtml}
+    </div>
+    <div class="card-footer">
+      <button class="btn" onclick="openAddVariantModal(${item.id})">+ Variant</button>
+      <button class="btn" onclick="openLinkScreenModal(${item.id})">+ Link screen</button>
+      ${previewBtn}
+    </div>
+  </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Rendering — flows
+// ---------------------------------------------------------------------------
+
+function renderFlows() {
+  const container = document.getElementById('items-container');
+  if (state.items.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <p>No flows yet.</p>
+        <button class="btn btn-primary" onclick="openNewItemModal()">+ New flow</button>
+      </div>`;
+    return;
+  }
+  container.innerHTML = state.items.map(renderFlowCard).join('');
+}
+
+function renderFlowCard(item) {
+  const meta = [item.description, item.usage].filter(Boolean).join(' · ');
+  const metaHtml = meta
+    ? `<div class="card-meta">${escHtml(meta)}</div>`
+    : '';
+
+  const screens = item.screens || [];
+  const screenTreeHtml = renderFlowScreenTree(screens);
+
+  const variantsHtml = renderVariants(item, 'flow');
+
+  const selectedFile = item.selected_file || null;
+  const previewBtn = selectedFile
+    ? `<button class="btn btn-ghost" onclick="previewFile('${escAttr(selectedFile)}')">Preview selected</button>`
+    : '';
+
+  const screensJson = JSON.stringify(screens).replace(/'/g, '&#39;');
+  const viewTreeBtn = screens.length > 0
+    ? `<button class="btn" onclick="openFlowTree(${item.id}, '${escAttr(item.name)}', JSON.parse(this.dataset.screens))" data-screens="${escAttr(JSON.stringify(screens))}">View tree →</button>`
+    : '';
+
+  return `
+  <div class="card" id="card-${item.id}">
+    <div class="card-header">
+      <span class="card-name" style="cursor:pointer;text-decoration:underline dotted"
+            onclick="openFlowTree(${item.id}, '${escAttr(item.name)}', JSON.parse(this.dataset.screens))"
+            data-screens="${escAttr(JSON.stringify(screens))}">${escHtml(item.name)}</span>
+      <select class="status-select status-${item.status}"
+              onchange="updateStatus(${item.id}, this)">
+        <option value="exploring"  ${item.status === 'exploring'  ? 'selected' : ''}>exploring</option>
+        <option value="approved"   ${item.status === 'approved'   ? 'selected' : ''}>approved</option>
+        <option value="finalised"  ${item.status === 'finalised'  ? 'selected' : ''}>finalised</option>
+      </select>
+      <button class="btn-danger btn" onclick="deleteEntity(${item.id})" title="Delete">&#x2715;</button>
+    </div>
+    ${metaHtml}
+    ${screenTreeHtml}
+    <div class="variants-section">
+      ${variantsHtml}
+    </div>
+    <div class="card-footer">
+      <button class="btn" onclick="openAddVariantModal(${item.id})">+ Variant</button>
+      <button class="btn" onclick="openLinkScreenModal(${item.id})">+ Link screen</button>
+      ${viewTreeBtn}
+      ${previewBtn}
+    </div>
+  </div>`;
+}
+
+function renderFlowScreenTree(screens) {
+  if (screens.length === 0) {
+    return '';
+  }
+
+  // Build set of IDs in this flow for root detection.
+  const linkedIds = new Set(screens.map(s => s.id));
+
+  // Group children by parent.
+  const childrenByParent = {};
+  const roots = [];
+
+  for (const screen of screens) {
+    if (!screen.parent_id || !linkedIds.has(screen.parent_id)) {
+      roots.push(screen);
+    } else {
+      if (!childrenByParent[screen.parent_id]) {
+        childrenByParent[screen.parent_id] = [];
+      }
+      childrenByParent[screen.parent_id].push(screen);
+    }
+  }
+
+  function renderNode(screen) {
+    const children = childrenByParent[screen.id] || [];
+    const childrenHtml = children.length > 0
+      ? `<ul class="screen-tree-children">${children.map(renderNode).join('')}</ul>`
+      : '';
+    return `<li>&#11044; ${escHtml(screen.name)}${childrenHtml}</li>`;
+  }
+
+  const listHtml = roots.map(renderNode).join('');
+
+  return `
+  <div class="screen-tree">
+    <div class="screen-tree-heading">Screens</div>
+    <ul class="screen-tree-list">${listHtml}</ul>
+  </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Rendering — variants (shared)
+// ---------------------------------------------------------------------------
+
+function renderVariants(item, entityType) {
+  const variants = item.variants || [];
+
+  if (variants.length === 0) {
     return `<div class="variants-heading">Variants (0)</div>
             <div style="color: var(--text-muted); font-size: 12px;">No variants yet.</div>`;
   }
 
-  const rows = item.variants.map(v => {
-    const isSelected  = v.file === item.selected_file;
-    const dotClass    = isSelected ? 'variant-dot is-selected' : 'variant-dot';
-    const dotChar     = isSelected ? '●' : '○';
-    const label       = v.label ? escHtml(v.label) : '';
-    const selectBtn   = isSelected
+  const rows = variants.map(v => {
+    const isSelected = v.file === item.selected_file;
+    const dotClass   = isSelected ? 'variant-dot is-selected' : 'variant-dot';
+    const dotChar    = isSelected ? '&#11044;' : '&#9900;';
+    const label      = v.label ? escHtml(v.label) : '';
+    const selectBtn  = isSelected
       ? ''
-      : `<button class="btn btn-ghost" onclick="selectVariant(${v.id})">Select</button>`;
+      : `<button class="btn btn-ghost" onclick="selectVariant(${v.id}, '${entityType}')">Select</button>`;
 
     return `
     <div class="variant-row" id="variant-row-${v.id}">
@@ -627,12 +1026,12 @@ function renderVariants(item) {
       <div class="variant-actions">
         <button class="btn btn-ghost" onclick="previewFile('${escAttr(v.file)}')">Preview</button>
         ${selectBtn}
-        <button class="btn-danger btn" onclick="deleteVariant(${v.id}, ${item.id})" title="Delete variant">✕</button>
+        <button class="btn-danger btn" onclick="deleteVariant(${v.id}, '${entityType}')" title="Delete variant">&#x2715;</button>
       </div>
     </div>`;
   }).join('');
 
-  return `<div class="variants-heading">Variants (${item.variants.length})</div>${rows}`;
+  return `<div class="variants-heading">Variants (${variants.length})</div>${rows}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -641,11 +1040,11 @@ function renderVariants(item) {
 
 async function renderSystem() {
   const container = document.getElementById('items-container');
-  container.innerHTML = '<div class="system-content"><em style="color:var(--text-muted)">Loading…</em></div>';
+  container.innerHTML = '<div class="system-content"><em style="color:var(--text-muted)">Loading&#8230;</em></div>';
 
   const res = await fetch('/system.md');
   if (!res.ok) {
-    container.innerHTML = '<div class="system-content">system.md not found — run <code>init</code> first.</div>';
+    container.innerHTML = '<div class="system-content">system.md not found &#8212; run <code>init</code> first.</div>';
     return;
   }
 
@@ -661,44 +1060,75 @@ async function renderSystem() {
 }
 
 // ---------------------------------------------------------------------------
-// API calls
+// API calls — entity actions
 // ---------------------------------------------------------------------------
 
-async function updateStatus(itemId, selectEl) {
+async function updateStatus(entityId, selectEl) {
   const newStatus = selectEl.value;
-  const res = await fetch(`/api/items/${itemId}`, {
+  const res = await fetch(`/api/${state.section}/${entityId}`, {
     method:  'PUT',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ status: newStatus }),
   });
   if (!res.ok) { alert('Failed to update status'); selectEl.value = ''; return; }
-
-  // Update class in-place without full re-render
   selectEl.className = `status-select status-${newStatus}`;
 }
 
-async function deleteItem(itemId) {
+async function deleteEntity(entityId) {
   if (!confirm('Delete this item and all its variants?')) return;
-  const res = await fetch(`/api/items/${itemId}`, { method: 'DELETE' });
-  if (!res.ok) { alert('Failed to delete item'); return; }
-  loadItems();
+  const res = await fetch(`/api/${state.section}/${entityId}`, { method: 'DELETE' });
+  if (!res.ok) { alert('Failed to delete'); return; }
+  loadSection();
 }
 
-async function selectVariant(variantId) {
-  const res = await fetch(`/api/variants/${variantId}/select`, { method: 'PUT' });
+// ---------------------------------------------------------------------------
+// API calls — variant actions
+// ---------------------------------------------------------------------------
+
+async function selectVariant(variantId, entityType) {
+  const prefix = entityType === 'screen'    ? 'screen-variants'
+               : entityType === 'component' ? 'component-variants'
+               : 'flow-variants';
+  const res = await fetch(`/api/${prefix}/${variantId}/select`, { method: 'PUT' });
   if (!res.ok) { alert('Failed to select variant'); return; }
-  loadItems();
+  loadSection();
 }
 
-async function deleteVariant(variantId, itemId) {
+async function deleteVariant(variantId, entityType) {
   if (!confirm('Delete this variant?')) return;
-  const res = await fetch(`/api/variants/${variantId}`, { method: 'DELETE' });
+  const prefix = entityType === 'screen'    ? 'screen-variants'
+               : entityType === 'component' ? 'component-variants'
+               : 'flow-variants';
+  const res = await fetch(`/api/${prefix}/${variantId}`, { method: 'DELETE' });
   if (!res.ok) { alert('Failed to delete variant'); return; }
-  loadItems();
+  loadSection();
 }
+
+let _previewCurrentFile = null;
 
 function previewFile(filename) {
-  window.open(`/design/${encodeURIComponent(filename)}`, '_blank');
+  _previewCurrentFile = filename;
+  const drawer = document.getElementById('preview-drawer');
+  const iframe = document.getElementById('preview-iframe');
+  const title  = document.getElementById('preview-drawer-title');
+  iframe.src = `/design/${encodeURIComponent(filename)}`;
+  title.textContent = filename;
+  drawer.style.right = '0';
+  document.getElementById('preview-backdrop').style.display = 'block';
+}
+
+function closePreviewDrawer() {
+  const drawer = document.getElementById('preview-drawer');
+  drawer.style.right = '-440px';
+  document.getElementById('preview-backdrop').style.display = 'none';
+  setTimeout(() => { document.getElementById('preview-iframe').src = ''; }, 250);
+  _previewCurrentFile = null;
+}
+
+function previewNewTab() {
+  if (_previewCurrentFile) {
+    window.open(`/design/${encodeURIComponent(_previewCurrentFile)}`, '_blank');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -706,17 +1136,17 @@ function previewFile(filename) {
 // ---------------------------------------------------------------------------
 
 function openNewItemModal() {
-  document.getElementById('modal-title').textContent = 'New item';
-  document.getElementById('modal-body').innerHTML = `
+  const singular = state.section.slice(0, -1);
+  document.getElementById('modal-title').textContent = `New ${singular}`;
+
+  const showFile = state.section !== 'flows';
+  const fileField = showFile ? `
     <div class="form-field">
-      <label class="form-label">Type</label>
-      <select class="form-select" id="f-type">
-        <option value="screen">screen</option>
-        <option value="layout">layout</option>
-        <option value="component">component</option>
-        <option value="flow">flow</option>
-      </select>
-    </div>
+      <label class="form-label">First variant file (optional)</label>
+      <input class="form-input" id="f-file" type="text" placeholder="e.g. reading-view.html">
+    </div>` : '';
+
+  document.getElementById('modal-body').innerHTML = `
     <div class="form-field">
       <label class="form-label">Name <span style="color:#c0392b">*</span></label>
       <input class="form-input" id="f-name" type="text" placeholder="e.g. Reading View">
@@ -729,10 +1159,7 @@ function openNewItemModal() {
       <label class="form-label">Usage</label>
       <input class="form-input" id="f-usage" type="text" placeholder="Where / when is this used?">
     </div>
-    <div class="form-field">
-      <label class="form-label">First variant file (optional)</label>
-      <input class="form-input" id="f-file" type="text" placeholder="e.g. reading-view.html">
-    </div>`;
+    ${fileField}`;
 
   document.getElementById('modal-footer').innerHTML = `
     <button class="btn" onclick="closeModalDirect()">Cancel</button>
@@ -743,35 +1170,35 @@ function openNewItemModal() {
 }
 
 async function submitNewItem() {
-  const type        = document.getElementById('f-type').value;
   const name        = document.getElementById('f-name').value.trim();
   const description = document.getElementById('f-description').value.trim() || null;
   const usage       = document.getElementById('f-usage').value.trim() || null;
-  const file        = document.getElementById('f-file').value.trim() || null;
+  const fileEl      = document.getElementById('f-file');
+  const file        = fileEl ? fileEl.value.trim() || null : null;
 
   if (!name) { alert('Name is required'); return; }
 
-  const res = await fetch('/api/items', {
+  const res = await fetch(`/api/${state.section}`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ type, name, description, usage, file }),
+    body:    JSON.stringify({ name, description, usage, file }),
   });
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    alert(data.error || 'Failed to create item');
+    alert(data.error || 'Failed to create');
     return;
   }
 
   closeModalDirect();
-  loadItems();
+  loadSection();
 }
 
 // ---------------------------------------------------------------------------
 // Modal — add variant
 // ---------------------------------------------------------------------------
 
-function openAddVariantModal(itemId) {
+function openAddVariantModal(entityId) {
   document.getElementById('modal-title').textContent = 'Add variant';
   document.getElementById('modal-body').innerHTML = `
     <div class="form-field">
@@ -793,13 +1220,13 @@ function openAddVariantModal(itemId) {
 
   document.getElementById('modal-footer').innerHTML = `
     <button class="btn" onclick="closeModalDirect()">Cancel</button>
-    <button class="btn btn-primary" onclick="submitNewVariant(${itemId})">Add</button>`;
+    <button class="btn btn-primary" onclick="submitNewVariant(${entityId})">Add</button>`;
 
   document.getElementById('modal-backdrop').classList.add('open');
   document.getElementById('f-vfile').focus();
 }
 
-async function submitNewVariant(itemId) {
+async function submitNewVariant(entityId) {
   const file           = document.getElementById('f-vfile').value.trim();
   const label          = document.getElementById('f-vlabel').value.trim() || null;
   const ui_description = document.getElementById('f-vuidesc').value.trim() || null;
@@ -807,7 +1234,7 @@ async function submitNewVariant(itemId) {
 
   if (!file) { alert('File is required'); return; }
 
-  const res = await fetch(`/api/items/${itemId}/variants`, {
+  const res = await fetch(`/api/${state.section}/${entityId}/variants`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ file, label, ui_description, notes }),
@@ -820,7 +1247,52 @@ async function submitNewVariant(itemId) {
   }
 
   closeModalDirect();
-  loadItems();
+  loadSection();
+}
+
+// ---------------------------------------------------------------------------
+// Modal — link screen
+// ---------------------------------------------------------------------------
+
+function openLinkScreenModal(entityId) {
+  document.getElementById('modal-title').textContent = 'Link screen';
+  document.getElementById('modal-body').innerHTML = `
+    <div class="form-field">
+      <label class="form-label">Screen ID <span style="color:#c0392b">*</span></label>
+      <input class="form-input" id="f-screen-id" type="number" placeholder="e.g. 3">
+    </div>`;
+
+  document.getElementById('modal-footer').innerHTML = `
+    <button class="btn" onclick="closeModalDirect()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitLinkScreen(${entityId})">Link</button>`;
+
+  document.getElementById('modal-backdrop').classList.add('open');
+  document.getElementById('f-screen-id').focus();
+}
+
+async function submitLinkScreen(entityId) {
+  const screenIdRaw = document.getElementById('f-screen-id').value.trim();
+  const screen_id   = parseInt(screenIdRaw, 10);
+
+  if (!screenIdRaw || isNaN(screen_id) || screen_id <= 0) {
+    alert('A valid screen ID is required');
+    return;
+  }
+
+  const res = await fetch(`/api/${state.section}/${entityId}/link-screen`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ screen_id }),
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    alert(data.error || 'Failed to link screen');
+    return;
+  }
+
+  closeModalDirect();
+  loadSection();
 }
 
 // ---------------------------------------------------------------------------
@@ -844,12 +1316,166 @@ function closeModalDirect() {
 // ---------------------------------------------------------------------------
 
 window.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeModalDirect();
+  if (e.key === 'Escape') { closePreviewDrawer(); closeModalDirect(); }
 });
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Flow tree view
+// ---------------------------------------------------------------------------
+
+function openFlowTree(flowId, flowName, screens) {
+  state.treeFlowId = flowId;
+
+  // Layout constants — thumb 200×120, info ~45px → node 165px tall
+  const NW = 200, NH = 165, HGAP = 48, VGAP = 72;
+  const linkedIds = new Set(screens.map(s => s.id));
+
+  // Build child map
+  const kids = {};
+  for (const s of screens) { kids[s.id] = []; }
+  for (const s of screens) {
+    if (s.parent_id && linkedIds.has(s.parent_id)) {
+      kids[s.parent_id].push(s);
+    }
+  }
+  const roots = screens.filter(s => !s.parent_id || !linkedIds.has(s.parent_id));
+
+  // Recursive subtree layout — returns subtree width
+  const pos = {};
+  let maxX = 0;
+  function layout(node, depth, x0) {
+    const children = kids[node.id] || [];
+    if (!children.length) {
+      pos[node.id] = { x: x0, y: depth * (NH + VGAP) };
+      maxX = Math.max(maxX, x0);
+      return NW;
+    }
+    let cx = x0, total = 0;
+    for (const c of children) {
+      const sw = layout(c, depth + 1, cx);
+      cx += sw + HGAP;
+      total += sw + HGAP;
+    }
+    total -= HGAP;
+    const mid = (pos[children[0].id].x + pos[children[children.length - 1].id].x) / 2;
+    pos[node.id] = { x: mid, y: depth * (NH + VGAP) };
+    maxX = Math.max(maxX, mid);
+    return Math.max(total, NW);
+  }
+  let cx0 = 0;
+  for (const r of roots) { cx0 += layout(r, 0, cx0) + HGAP; }
+
+  // SVG bezier arrows
+  let arrows = '';
+  for (const s of screens) {
+    if (s.parent_id && linkedIds.has(s.parent_id) && pos[s.parent_id] && pos[s.id]) {
+      const x1 = pos[s.parent_id].x + NW / 2, y1 = pos[s.parent_id].y + NH;
+      const x2 = pos[s.id].x + NW / 2,        y2 = pos[s.id].y;
+      const my = (y1 + y2) / 2;
+      arrows += `<path d="M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2 - 7}" fill="none" stroke="#3a4458" stroke-width="1.5" marker-end="url(#arr)"/>`;
+    }
+  }
+
+  // Node HTML — negative-margin trick collapses scaled iframe layout footprint
+  let nodes = '';
+  for (const s of screens) {
+    if (!pos[s.id]) { continue; }
+    const { x, y } = pos[s.id];
+    const sc = `status-${s.status || 'exploring'}`;
+    const thumb = s.selected_file
+      ? `<div class="flow-node-thumb" onclick="event.stopPropagation();previewFile('${escAttr(s.selected_file)}')">
+           <div class="flow-node-thumb-scale">
+             <iframe src="/design/${encodeURIComponent(s.selected_file)}" loading="lazy"></iframe>
+           </div>
+           <button class="flow-node-thumb-open" onclick="event.stopPropagation();window.open('/design/${encodeURIComponent(s.selected_file)}','_blank')">↗</button>
+         </div>`
+      : `<div class="flow-node-thumb" style="cursor:default;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:11px">No file</div>`;
+    nodes += `
+      <div class="flow-node ${sc}" style="left:${x}px;top:${y}px">
+        ${thumb}
+        <div class="flow-node-info">
+          <div class="flow-node-name" title="${escAttr(s.name)}">${escHtml(s.name)}</div>
+          <span class="flow-node-status ${sc}">${escHtml(s.status || 'exploring')}</span>
+        </div>
+      </div>`;
+  }
+
+  const posVals = Object.values(pos);
+  const canvasW = maxX + NW + 60;
+  const canvasH = (posVals.length ? posVals.reduce((m, p) => Math.max(m, p.y), 0) : 0) + NH + 60;
+
+  document.getElementById('items-container').innerHTML = `
+    <div class="flow-tree-controls">
+      <button class="btn" onclick="closeFlowTree()">&#8592; Flows</button>
+      <span style="font-size:13px;font-weight:600;color:var(--text-primary)">${escHtml(flowName)}</span>
+      <div style="flex:1"></div>
+      <div class="flow-tree-zoom">
+        <button onclick="zoomTree(-0.1)">&#8722;</button>
+        <button onclick="zoomTree(0.1)">+</button>
+        <button onclick="resetZoom()">&#8635;</button>
+      </div>
+    </div>
+    <div class="flow-tree-view" id="ftv">
+      <div class="flow-tree-canvas" id="ftc" style="width:${canvasW}px;height:${canvasH}px">
+        <svg class="flow-tree-svg" id="fts" width="${canvasW}" height="${canvasH}">
+          <defs>
+            <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto-start-reverse">
+              <polygon points="0 0,10 3.5,0 7" fill="#3a4458"/>
+            </marker>
+          </defs>
+          ${arrows}
+        </svg>
+        ${nodes}
+      </div>
+    </div>`;
+
+  let scale = 1, panX = 20, panY = 20, dragging = false, lx = 0, ly = 0;
+  const view = document.getElementById('ftv');
+  const canvas = document.getElementById('ftc');
+
+  function applyT() {
+    canvas.style.transform = `translate(${panX}px,${panY}px) scale(${scale})`;
+  }
+  applyT();
+
+  view.addEventListener('mousedown', e => {
+    dragging = true; lx = e.clientX; ly = e.clientY;
+    view.classList.add('grabbing');
+  });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) { return; }
+    panX += e.clientX - lx; panY += e.clientY - ly;
+    lx = e.clientX; ly = e.clientY;
+    applyT();
+  });
+  window.addEventListener('mouseup', () => { dragging = false; view.classList.remove('grabbing'); });
+  view.addEventListener('wheel', e => {
+    e.preventDefault();
+    scale = Math.max(0.3, Math.min(2.5, scale + (e.deltaY > 0 ? -0.08 : 0.08)));
+    applyT();
+  }, { passive: false });
+
+  window._treeZoom  = { get scale() { return scale; }, set scale(v) { scale = v; applyT(); } };
+  window._treeReset = () => { scale = 1; panX = 20; panY = 20; applyT(); };
+}
+
+function zoomTree(delta) {
+  if (!window._treeZoom) { return; }
+  window._treeZoom.scale = Math.max(0.3, Math.min(2.5, window._treeZoom.scale + delta));
+}
+
+function resetZoom() {
+  if (window._treeReset) { window._treeReset(); }
+}
+
+function closeFlowTree() {
+  state.treeFlowId = null;
+  loadSection();
+}
 
 function escHtml(str) {
   if (!str) return '';
@@ -883,154 +1509,557 @@ function escAttr(str) {
 
 
 # ---------------------------------------------------------------------------
-# API routes
+# Request handler
 # ---------------------------------------------------------------------------
 
-def _item_not_found(item_id: int):
-    return jsonify({"error": f"Item {item_id} not found"}), 404
+# Compiled route patterns for parameterised paths.
+_RE_DESIGN      = re.compile(r"^/design/(.+)$")
+_RE_SCREENSHOTS = re.compile(r"^/screenshots/(.+)$")
+_RE_SCREENSHOT  = re.compile(r"^/variants/(\d+)/screenshot$")
+
+_RE_SCREENS        = re.compile(r"^/api/screens$")
+_RE_SCREEN         = re.compile(r"^/api/screens/(\d+)$")
+_RE_SCREEN_PARENT  = re.compile(r"^/api/screens/(\d+)/parent$")
+_RE_SCREEN_VARS    = re.compile(r"^/api/screens/(\d+)/variants$")
+_RE_SCREEN_VAR_SEL = re.compile(r"^/api/screen-variants/(\d+)/select$")
+_RE_SCREEN_VAR     = re.compile(r"^/api/screen-variants/(\d+)$")
+
+_RE_COMPONENTS        = re.compile(r"^/api/components$")
+_RE_COMPONENT         = re.compile(r"^/api/components/(\d+)$")
+_RE_COMPONENT_VARS    = re.compile(r"^/api/components/(\d+)/variants$")
+_RE_COMPONENT_VAR_SEL = re.compile(r"^/api/component-variants/(\d+)/select$")
+_RE_COMPONENT_VAR     = re.compile(r"^/api/component-variants/(\d+)$")
+_RE_COMPONENT_LINK    = re.compile(r"^/api/components/(\d+)/link-screen$")
+
+_RE_FLOWS        = re.compile(r"^/api/flows$")
+_RE_FLOW         = re.compile(r"^/api/flows/(\d+)$")
+_RE_FLOW_VARS    = re.compile(r"^/api/flows/(\d+)/variants$")
+_RE_FLOW_VAR_SEL = re.compile(r"^/api/flow-variants/(\d+)/select$")
+_RE_FLOW_VAR     = re.compile(r"^/api/flow-variants/(\d+)$")
+_RE_FLOW_LINK    = re.compile(r"^/api/flows/(\d+)/link-screen$")
 
 
-def _variant_not_found(variant_id: int):
-    return jsonify({"error": f"Variant {variant_id} not found"}), 404
+class FolioHandler(BaseHTTPRequestHandler):
 
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
-@app.route("/")
-def route_dashboard():
-    return DASHBOARD_HTML, 200, {"Content-Type": "text/html; charset=utf-8"}
-
-
-@app.route("/design/<path:filename>")
-def route_design_file(filename: str):
-    assert filename, "filename must not be empty"
-    return send_from_directory(db.DESIGN_DIR, filename)
-
-
-@app.route("/screenshots/<path:filename>")
-def route_screenshot_file(filename: str):
-    assert filename, "filename must not be empty"
-    return send_from_directory(db.SCREENSHOTS_DIR, filename)
-
-
-@app.route("/system.md")
-def route_system_md():
-    if not os.path.exists(db.SYSTEM_MD_PATH):
-        abort(404)
-    with open(db.SYSTEM_MD_PATH, "r", encoding="utf-8") as f:
-        content = f.read()
-    return content, 200, {"Content-Type": "text/plain; charset=utf-8"}
-
-
-@app.route("/api/items", methods=["GET"])
-def api_get_items():
-    type_filter = request.args.get("type") or None
-    if type_filter is not None and type_filter not in {"screen", "layout", "component", "flow"}:
-        return jsonify({"error": f"Invalid type: {type_filter!r}"}), 400
-    items = db.list_items(type_filter=type_filter)
-    return jsonify(items)
-
-
-@app.route("/api/items", methods=["POST"])
-def api_create_item():
-    data = request.get_json(force=True, silent=True) or {}
-    try:
-        item = db.create_item(
-            type=data.get("type", ""),
-            name=data.get("name", ""),
-            description=data.get("description"),
-            usage=data.get("usage"),
-        )
-    except (ValueError, AssertionError) as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    # Optionally create first variant if "file" was provided
-    first_file = data.get("file")
-    if first_file:
+    def _read_json(self) -> dict:
+        length = int(self.headers.get("Content-Length", 0))
+        if length == 0:
+            return {}
         try:
-            variant = db.create_variant(item_id=item["id"], file=first_file, label="v1")
-            db.select_variant(variant["id"])
-            # Reload item to include variant + selected_file
-            item = db.get_item(item["id"])
+            return json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, ValueError):
+            return {}
+
+    def _send_response_bytes(self, body: bytes, content_type: str, status: int = 200) -> None:
+        assert isinstance(body, bytes), "body must be bytes"
+        assert content_type, "content_type must not be empty"
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_json(self, data, status: int = 200) -> None:
+        body = json.dumps(data).encode("utf-8")
+        self._send_response_bytes(body, "application/json", status)
+
+    def _send_html(self, html: str) -> None:
+        assert html, "html must not be empty"
+        body = html.encode("utf-8")
+        self._send_response_bytes(body, "text/html; charset=utf-8", 200)
+
+    def _serve_static(self, path: Path) -> None:
+        assert path is not None, "path must not be None"
+        if not path.exists():
+            self._not_found()
+            return
+        mime, _ = mimetypes.guess_type(str(path))
+        if mime is None:
+            mime = "application/octet-stream"
+        body = path.read_bytes()
+        self._send_response_bytes(body, mime, 200)
+
+    def _not_found(self, msg: str = "Not found") -> None:
+        self._send_json({"error": msg}, 404)
+
+    def _parse_multipart_file(self) -> bytes | None:
+        """Extract first file payload from multipart/form-data body."""
+        from email.parser import BytesParser
+        content_type = self.headers.get("Content-Type", "")
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+        raw = f"Content-Type: {content_type}\r\n\r\n".encode() + body
+        msg = BytesParser().parsebytes(raw)
+        for part in msg.walk():
+            cd = part.get("Content-Disposition", "")
+            if "filename" in cd:
+                return part.get_payload(decode=True)
+        return None
+
+    def log_message(self, *args) -> None:
+        # Suppress default Apache-style per-request logging.
+        pass
+
+    # ------------------------------------------------------------------
+    # GET
+    # ------------------------------------------------------------------
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/":
+            self._send_html(DASHBOARD_HTML)
+            return
+
+        match = _RE_DESIGN.match(path)
+        if match:
+            self._serve_static(db.DESIGN_DIR / unquote(match.group(1)))
+            return
+
+        match = _RE_SCREENSHOTS.match(path)
+        if match:
+            self._serve_static(db.SCREENSHOTS_DIR / unquote(match.group(1)))
+            return
+
+        if path == "/system.md":
+            if not db.SYSTEM_MD_PATH.exists():
+                self._not_found("system.md not found")
+                return
+            body = db.SYSTEM_MD_PATH.read_text(encoding="utf-8").encode("utf-8")
+            self._send_response_bytes(body, "text/plain; charset=utf-8", 200)
+            return
+
+        if _RE_SCREENS.match(path):
+            self._send_json(db.list_screens())
+            return
+
+        if _RE_COMPONENTS.match(path):
+            self._send_json(db.list_components())
+            return
+
+        if _RE_FLOWS.match(path):
+            self._send_json(db.list_flows())
+            return
+
+        self._not_found()
+
+    # ------------------------------------------------------------------
+    # POST
+    # ------------------------------------------------------------------
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if _RE_SCREENS.match(path):
+            self._handle_create_screen()
+            return
+
+        match = _RE_SCREEN_VARS.match(path)
+        if match:
+            self._handle_create_screen_variant(int(match.group(1)))
+            return
+
+        if _RE_COMPONENTS.match(path):
+            self._handle_create_component()
+            return
+
+        match = _RE_COMPONENT_VARS.match(path)
+        if match:
+            self._handle_create_component_variant(int(match.group(1)))
+            return
+
+        match = _RE_COMPONENT_LINK.match(path)
+        if match:
+            self._handle_link_component_screen(int(match.group(1)))
+            return
+
+        if _RE_FLOWS.match(path):
+            self._handle_create_flow()
+            return
+
+        match = _RE_FLOW_VARS.match(path)
+        if match:
+            self._handle_create_flow_variant(int(match.group(1)))
+            return
+
+        match = _RE_FLOW_LINK.match(path)
+        if match:
+            self._handle_link_flow_screen(int(match.group(1)))
+            return
+
+        match = _RE_SCREENSHOT.match(path)
+        if match:
+            self._handle_upload_screenshot(int(match.group(1)))
+            return
+
+        self._not_found()
+
+    def _handle_create_screen(self) -> None:
+        data = self._read_json()
+        try:
+            screen = db.create_screen(
+                name=data.get("name", ""),
+                description=data.get("description"),
+                usage=data.get("usage"),
+            )
         except (ValueError, AssertionError) as exc:
-            return jsonify({"error": str(exc)}), 400
+            self._send_json({"error": str(exc)}, 400)
+            return
 
-    return jsonify(item), 201
+        first_file = data.get("file")
+        if first_file:
+            try:
+                variant = db.create_screen_variant(
+                    screen_id=screen["id"],
+                    file=first_file,
+                    label="v1",
+                    ui_description=None,
+                    notes=None,
+                )
+                db.select_screen_variant(variant["id"])
+                screen = db.get_screen(screen["id"])
+            except (ValueError, AssertionError) as exc:
+                self._send_json({"error": str(exc)}, 400)
+                return
 
+        self._send_json(screen, 201)
 
-@app.route("/api/items/<int:item_id>", methods=["PUT"])
-def api_update_item(item_id: int):
-    data = request.get_json(force=True, silent=True) or {}
-    if not data:
-        return jsonify({"error": "No fields provided"}), 400
-    try:
-        item = db.update_item(item_id, **data)
-    except (ValueError, AssertionError) as exc:
-        return jsonify({"error": str(exc)}), 400
-    if item is None:
-        return _item_not_found(item_id)
-    return jsonify(item)
+    def _handle_create_component(self) -> None:
+        data = self._read_json()
+        try:
+            component = db.create_component(
+                name=data.get("name", ""),
+                description=data.get("description"),
+                usage=data.get("usage"),
+            )
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
 
+        first_file = data.get("file")
+        if first_file:
+            try:
+                variant = db.create_component_variant(
+                    component_id=component["id"],
+                    file=first_file,
+                    label="v1",
+                    ui_description=None,
+                    notes=None,
+                )
+                db.select_component_variant(variant["id"])
+                component = db.get_component(component["id"])
+            except (ValueError, AssertionError) as exc:
+                self._send_json({"error": str(exc)}, 400)
+                return
 
-@app.route("/api/items/<int:item_id>", methods=["DELETE"])
-def api_delete_item(item_id: int):
-    deleted = db.delete_item(item_id)
-    if not deleted:
-        return _item_not_found(item_id)
-    return jsonify({"deleted": True})
+        self._send_json(component, 201)
 
+    def _handle_create_flow(self) -> None:
+        data = self._read_json()
+        try:
+            flow = db.create_flow(
+                name=data.get("name", ""),
+                description=data.get("description"),
+                usage=data.get("usage"),
+            )
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        self._send_json(flow, 201)
 
-@app.route("/api/items/<int:item_id>/variants", methods=["POST"])
-def api_create_variant(item_id: int):
-    data = request.get_json(force=True, silent=True) or {}
-    try:
-        variant = db.create_variant(
-            item_id=item_id,
-            file=data.get("file", ""),
-            label=data.get("label"),
-            ui_description=data.get("ui_description"),
-            notes=data.get("notes"),
-        )
-    except (ValueError, AssertionError) as exc:
-        return jsonify({"error": str(exc)}), 400
-    return jsonify(variant), 201
+    def _handle_create_screen_variant(self, screen_id: int) -> None:
+        assert screen_id > 0, "screen_id must be positive"
+        data = self._read_json()
+        try:
+            variant = db.create_screen_variant(
+                screen_id=screen_id,
+                file=data.get("file", ""),
+                label=data.get("label"),
+                ui_description=data.get("ui_description"),
+                notes=data.get("notes"),
+            )
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        self._send_json(variant, 201)
 
+    def _handle_create_component_variant(self, component_id: int) -> None:
+        assert component_id > 0, "component_id must be positive"
+        data = self._read_json()
+        try:
+            variant = db.create_component_variant(
+                component_id=component_id,
+                file=data.get("file", ""),
+                label=data.get("label"),
+                ui_description=data.get("ui_description"),
+                notes=data.get("notes"),
+            )
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        self._send_json(variant, 201)
 
-@app.route("/api/variants/<int:variant_id>/select", methods=["PUT"])
-def api_select_variant(variant_id: int):
-    item = db.select_variant(variant_id)
-    if item is None:
-        return _variant_not_found(variant_id)
-    return jsonify(item)
+    def _handle_create_flow_variant(self, flow_id: int) -> None:
+        assert flow_id > 0, "flow_id must be positive"
+        data = self._read_json()
+        try:
+            variant = db.create_flow_variant(
+                flow_id=flow_id,
+                file=data.get("file", ""),
+                label=data.get("label"),
+                ui_description=data.get("ui_description"),
+                notes=data.get("notes"),
+            )
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        self._send_json(variant, 201)
 
+    def _handle_link_component_screen(self, component_id: int) -> None:
+        assert component_id > 0, "component_id must be positive"
+        data = self._read_json()
+        screen_id = data.get("screen_id")
+        if not isinstance(screen_id, int) or screen_id <= 0:
+            self._send_json({"error": "screen_id must be a positive integer"}, 400)
+            return
+        try:
+            result = db.link_component_screen(component_id, screen_id)
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        self._send_json(result)
 
-@app.route("/api/variants/<int:variant_id>", methods=["DELETE"])
-def api_delete_variant(variant_id: int):
-    deleted = db.delete_variant(variant_id)
-    if not deleted:
-        return _variant_not_found(variant_id)
-    return jsonify({"deleted": True})
+    def _handle_link_flow_screen(self, flow_id: int) -> None:
+        assert flow_id > 0, "flow_id must be positive"
+        data = self._read_json()
+        screen_id = data.get("screen_id")
+        if not isinstance(screen_id, int) or screen_id <= 0:
+            self._send_json({"error": "screen_id must be a positive integer"}, 400)
+            return
+        try:
+            result = db.link_flow_screen(flow_id, screen_id)
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        self._send_json(result)
 
+    def _handle_upload_screenshot(self, variant_id: int) -> None:
+        assert variant_id > 0, "variant_id must be positive"
+        file_bytes = self._parse_multipart_file()
+        if file_bytes is None:
+            self._send_json({"error": "No file in request"}, 400)
+            return
 
-@app.route("/variants/<int:variant_id>/screenshot", methods=["POST"])
-def route_upload_screenshot(variant_id: int):
-    if "file" not in request.files:
-        return jsonify({"error": "No file in request"}), 400
+        db.SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    uploaded = request.files["file"]
-    if not uploaded.filename:
-        return jsonify({"error": "Empty filename"}), 400
+        safe_name = f"variant_{variant_id}.png"
+        save_path = db.SCREENSHOTS_DIR / safe_name
+        save_path.write_bytes(file_bytes)
 
-    os.makedirs(db.SCREENSHOTS_DIR, exist_ok=True)
+        updated = db.update_variant_screenshot(variant_id, safe_name)
+        if not updated:
+            self._send_json({"error": f"Variant {variant_id} not found"}, 404)
+            return
 
-    safe_name    = f"variant_{variant_id}.png"
-    save_path    = os.path.join(db.SCREENSHOTS_DIR, safe_name)
-    relative_path = safe_name
+        self._send_json({"screenshot": safe_name})
 
-    uploaded.save(save_path)
-    updated = db.update_variant_screenshot(variant_id, relative_path)
-    if not updated:
-        return _variant_not_found(variant_id)
+    # ------------------------------------------------------------------
+    # PUT
+    # ------------------------------------------------------------------
 
-    return jsonify({"screenshot": relative_path})
+    def do_PUT(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        match = _RE_SCREEN_VAR_SEL.match(path)
+        if match:
+            self._handle_select_variant(int(match.group(1)), db.select_screen_variant)
+            return
+
+        match = _RE_SCREEN_PARENT.match(path)
+        if match:
+            self._handle_set_screen_parent(int(match.group(1)))
+            return
+
+        match = _RE_SCREEN.match(path)
+        if match:
+            self._handle_update_entity(int(match.group(1)), db.update_screen)
+            return
+
+        match = _RE_COMPONENT_VAR_SEL.match(path)
+        if match:
+            self._handle_select_variant(int(match.group(1)), db.select_component_variant)
+            return
+
+        match = _RE_COMPONENT.match(path)
+        if match:
+            self._handle_update_entity(int(match.group(1)), db.update_component)
+            return
+
+        match = _RE_FLOW_VAR_SEL.match(path)
+        if match:
+            self._handle_select_variant(int(match.group(1)), db.select_flow_variant)
+            return
+
+        match = _RE_FLOW.match(path)
+        if match:
+            self._handle_update_entity(int(match.group(1)), db.update_flow)
+            return
+
+        self._not_found()
+
+    def _handle_update_entity(self, entity_id: int, update_fn) -> None:
+        assert entity_id > 0, "entity_id must be positive"
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "No fields provided"}, 400)
+            return
+        try:
+            result = update_fn(entity_id, **data)
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        if result is None:
+            self._send_json({"error": f"Entity {entity_id} not found"}, 404)
+            return
+        self._send_json(result)
+
+    def _handle_select_variant(self, variant_id: int, select_fn) -> None:
+        assert variant_id > 0, "variant_id must be positive"
+        try:
+            result = select_fn(variant_id)
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        if result is None:
+            self._send_json({"error": f"Variant {variant_id} not found"}, 404)
+            return
+        self._send_json(result)
+
+    def _handle_set_screen_parent(self, screen_id: int) -> None:
+        assert screen_id > 0, "screen_id must be positive"
+        data = self._read_json()
+        parent_id = data.get("parent_id")
+        if parent_id is not None and (not isinstance(parent_id, int) or parent_id <= 0):
+            self._send_json({"error": "parent_id must be a positive integer or null"}, 400)
+            return
+        try:
+            result = db.set_screen_parent(screen_id, parent_id)
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        if result is None:
+            self._send_json({"error": f"Screen {screen_id} not found"}, 404)
+            return
+        self._send_json(result)
+
+    # ------------------------------------------------------------------
+    # DELETE
+    # ------------------------------------------------------------------
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        match = _RE_SCREEN_VAR.match(path)
+        if match:
+            self._handle_delete_variant(int(match.group(1)), db.delete_screen_variant)
+            return
+
+        match = _RE_SCREEN.match(path)
+        if match:
+            self._handle_delete_entity(int(match.group(1)), db.delete_screen)
+            return
+
+        match = _RE_COMPONENT_VAR.match(path)
+        if match:
+            self._handle_delete_variant(int(match.group(1)), db.delete_component_variant)
+            return
+
+        match = _RE_COMPONENT_LINK.match(path)
+        if match:
+            self._handle_unlink_component_screen(int(match.group(1)))
+            return
+
+        match = _RE_COMPONENT.match(path)
+        if match:
+            self._handle_delete_entity(int(match.group(1)), db.delete_component)
+            return
+
+        match = _RE_FLOW_VAR.match(path)
+        if match:
+            self._handle_delete_variant(int(match.group(1)), db.delete_flow_variant)
+            return
+
+        match = _RE_FLOW_LINK.match(path)
+        if match:
+            self._handle_unlink_flow_screen(int(match.group(1)))
+            return
+
+        match = _RE_FLOW.match(path)
+        if match:
+            self._handle_delete_entity(int(match.group(1)), db.delete_flow)
+            return
+
+        self._not_found()
+
+    def _handle_delete_entity(self, entity_id: int, delete_fn) -> None:
+        assert entity_id > 0, "entity_id must be positive"
+        try:
+            deleted = delete_fn(entity_id)
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        if not deleted:
+            self._send_json({"error": f"Entity {entity_id} not found"}, 404)
+            return
+        self._send_json({"deleted": True})
+
+    def _handle_delete_variant(self, variant_id: int, delete_fn) -> None:
+        assert variant_id > 0, "variant_id must be positive"
+        try:
+            deleted = delete_fn(variant_id)
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        if not deleted:
+            self._send_json({"error": f"Variant {variant_id} not found"}, 404)
+            return
+        self._send_json({"deleted": True})
+
+    def _handle_unlink_component_screen(self, component_id: int) -> None:
+        assert component_id > 0, "component_id must be positive"
+        data = self._read_json()
+        screen_id = data.get("screen_id")
+        if not isinstance(screen_id, int) or screen_id <= 0:
+            self._send_json({"error": "screen_id must be a positive integer"}, 400)
+            return
+        try:
+            result = db.unlink_component_screen(component_id, screen_id)
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        self._send_json(result)
+
+    def _handle_unlink_flow_screen(self, flow_id: int) -> None:
+        assert flow_id > 0, "flow_id must be positive"
+        data = self._read_json()
+        screen_id = data.get("screen_id")
+        if not isinstance(screen_id, int) or screen_id <= 0:
+            self._send_json({"error": "screen_id must be a positive integer"}, 400)
+            return
+        try:
+            result = db.unlink_flow_screen(flow_id, screen_id)
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        self._send_json(result)
 
 
 # ---------------------------------------------------------------------------
@@ -1039,9 +2068,15 @@ def route_upload_screenshot(variant_id: int):
 
 if __name__ == "__main__":
     host = "127.0.0.1"
-    port = 5555
-    print(f"Folio dashboard → http://{host}:{port}")
-    print(f"  DB:      {db.DB_PATH}")
-    print(f"  Design:  {db.DESIGN_DIR}")
-    print(f"  System:  {db.SYSTEM_MD_PATH}")
-    app.run(host=host, port=port, debug=True)
+    port = int(os.environ.get("FOLIO_PORT", 7842))
+
+    _write_pid()
+    atexit.register(_remove_pid)
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    print(f"Folio → http://{host}:{port}  (PID {os.getpid()})")
+    print(f"  DB:     {db.DB_PATH}")
+    print(f"  Design: {db.DESIGN_DIR}")
+    print(f"  System: {db.SYSTEM_MD_PATH}")
+    HTTPServer((host, port), FolioHandler).serve_forever()
