@@ -14,3 +14,7 @@ wheels/
 .folio/
 design.db
 screenshots/
+
+# Claude project files
+.claude/
+CLAUDE.md
