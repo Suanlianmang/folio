@@ -4,34 +4,35 @@ db.py — Folio data layer. All SQL lives here. Paths are CWD-based by default.
 Call configure(cwd) to override all path constants before any other function.
 """
 
-import os
 import re
 import shutil
 import sqlite3
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Path constants — resolved relative to CWD at import time
 # ---------------------------------------------------------------------------
 
-_cwd = os.getcwd()
+_cwd = Path.cwd()
 
-DB_PATH         = os.path.join(_cwd, "tools", "design.db")
-DESIGN_DIR      = os.path.join(_cwd, "design")
-SCREENSHOTS_DIR = os.path.join(_cwd, "tools", "screenshots")
-SYSTEM_MD_PATH  = os.path.join(_cwd, "tools", "system.md")
-TEMPLATE_PATH   = os.path.join(os.path.dirname(__file__), "system.md")
+DB_PATH         = _cwd / ".folio" / "design.db"
+DESIGN_DIR      = _cwd / ".folio" / "design"
+SCREENSHOTS_DIR = _cwd / ".folio" / "screenshots"
+SYSTEM_MD_PATH  = _cwd / ".folio" / "system.md"
+TEMPLATE_PATH   = Path.home() / ".folio" / "lib" / "system.md"
 
 
-def configure(cwd: str) -> None:
+def configure(cwd: str | Path) -> None:
     """Reset all path constants to be relative to cwd. Call before any other fn."""
     global DB_PATH, DESIGN_DIR, SCREENSHOTS_DIR, SYSTEM_MD_PATH
 
-    assert os.path.isabs(cwd), f"cwd must be absolute: {cwd!r}"
+    cwd = Path(cwd)
+    assert cwd.is_absolute(), f"cwd must be absolute: {str(cwd)!r}"
 
-    DB_PATH         = os.path.join(cwd, "tools", "design.db")
-    DESIGN_DIR      = os.path.join(cwd, "design")
-    SCREENSHOTS_DIR = os.path.join(cwd, "tools", "screenshots")
-    SYSTEM_MD_PATH  = os.path.join(cwd, "tools", "system.md")
+    DB_PATH         = cwd / ".folio" / "design.db"
+    DESIGN_DIR      = cwd / ".folio" / "design"
+    SCREENSHOTS_DIR = cwd / ".folio" / "screenshots"
+    SYSTEM_MD_PATH  = cwd / ".folio" / "system.md"
 
 
 # ---------------------------------------------------------------------------
@@ -50,13 +51,26 @@ def get_db() -> sqlite3.Connection:
 
 
 # ---------------------------------------------------------------------------
-# Schema init + seeding
+# Schema
 # ---------------------------------------------------------------------------
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS items (
+CREATE TABLE IF NOT EXISTS screens (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    type          TEXT NOT NULL CHECK(type IN ('screen','layout','component','flow')),
+    name          TEXT NOT NULL,
+    description   TEXT,
+    usage         TEXT,
+    parent_id     INTEGER REFERENCES screens(id) ON DELETE SET NULL,
+    selected_file TEXT,
+    rationale     TEXT,
+    status        TEXT NOT NULL DEFAULT 'exploring'
+                  CHECK(status IN ('exploring','approved','finalised')),
+    created_at    TEXT DEFAULT (datetime('now')),
+    updated_at    TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS components (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
     name          TEXT NOT NULL,
     description   TEXT,
     usage         TEXT,
@@ -68,9 +82,22 @@ CREATE TABLE IF NOT EXISTS items (
     updated_at    TEXT DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS variants (
+CREATE TABLE IF NOT EXISTS flows (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL,
+    description   TEXT,
+    usage         TEXT,
+    selected_file TEXT,
+    rationale     TEXT,
+    status        TEXT NOT NULL DEFAULT 'exploring'
+                  CHECK(status IN ('exploring','approved','finalised')),
+    created_at    TEXT DEFAULT (datetime('now')),
+    updated_at    TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS screen_variants (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id        INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    screen_id      INTEGER NOT NULL REFERENCES screens(id) ON DELETE CASCADE,
     file           TEXT NOT NULL,
     label          TEXT,
     ui_description TEXT,
@@ -78,30 +105,870 @@ CREATE TABLE IF NOT EXISTS variants (
     notes          TEXT,
     created_at     TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS component_variants (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    component_id   INTEGER NOT NULL REFERENCES components(id) ON DELETE CASCADE,
+    file           TEXT NOT NULL,
+    label          TEXT,
+    ui_description TEXT,
+    screenshot     TEXT,
+    notes          TEXT,
+    created_at     TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS flow_variants (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id        INTEGER NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
+    file           TEXT NOT NULL,
+    label          TEXT,
+    ui_description TEXT,
+    screenshot     TEXT,
+    notes          TEXT,
+    created_at     TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS flow_screens (
+    flow_id   INTEGER NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
+    screen_id INTEGER NOT NULL REFERENCES screens(id) ON DELETE CASCADE,
+    PRIMARY KEY (flow_id, screen_id)
+);
+
+CREATE TABLE IF NOT EXISTS component_usage (
+    component_id INTEGER NOT NULL REFERENCES components(id) ON DELETE CASCADE,
+    screen_id    INTEGER NOT NULL REFERENCES screens(id) ON DELETE CASCADE,
+    PRIMARY KEY (component_id, screen_id)
+);
 """
 
 
 def init_db() -> None:
     """Create DB schema, screenshots dir, and copy system.md template if needed."""
-    tools_dir = os.path.dirname(DB_PATH)
+    tools_dir = DB_PATH.parent
     assert tools_dir, "tools_dir must not be empty"
 
-    os.makedirs(tools_dir, exist_ok=True)
-    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+    DESIGN_DIR.mkdir(parents=True, exist_ok=True)
 
     conn = get_db()
     conn.executescript(_SCHEMA)
     conn.commit()
     conn.close()
 
-    if not os.path.exists(SYSTEM_MD_PATH):
-        assert os.path.exists(TEMPLATE_PATH), (
-            f"system.md template not found at {TEMPLATE_PATH!r}"
+    if not SYSTEM_MD_PATH.exists():
+        assert TEMPLATE_PATH.exists(), (
+            f"system.md template not found at {str(TEMPLATE_PATH)!r}"
         )
         shutil.copy(TEMPLATE_PATH, SYSTEM_MD_PATH)
 
 
-# Suffixes to strip when grouping design files into items.
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+_VALID_STATUSES = {"exploring", "approved", "finalised"}
+
+_VALID_SCREEN_FIELDS    = {"name", "description", "usage", "selected_file", "rationale", "status"}
+_VALID_COMPONENT_FIELDS = {"name", "description", "usage", "selected_file", "rationale", "status"}
+_VALID_FLOW_FIELDS      = {"name", "description", "usage", "selected_file", "rationale", "status"}
+
+
+def _row_to_dict(row: sqlite3.Row) -> dict:
+    """Convert a sqlite3.Row to a plain dict."""
+    return dict(row)
+
+
+def _fetch_screen_variants(conn: sqlite3.Connection, screen_id: int) -> list[dict]:
+    """Fetch all variants for a screen, ordered by created_at."""
+    cursor = conn.execute(
+        "SELECT * FROM screen_variants WHERE screen_id = ? ORDER BY created_at, id",
+        (screen_id,),
+    )
+    return [_row_to_dict(r) for r in cursor.fetchall()]
+
+
+def _fetch_component_variants(conn: sqlite3.Connection, component_id: int) -> list[dict]:
+    """Fetch all variants for a component, ordered by created_at."""
+    cursor = conn.execute(
+        "SELECT * FROM component_variants WHERE component_id = ? ORDER BY created_at, id",
+        (component_id,),
+    )
+    return [_row_to_dict(r) for r in cursor.fetchall()]
+
+
+def _fetch_flow_variants(conn: sqlite3.Connection, flow_id: int) -> list[dict]:
+    """Fetch all variants for a flow, ordered by created_at."""
+    cursor = conn.execute(
+        "SELECT * FROM flow_variants WHERE flow_id = ? ORDER BY created_at, id",
+        (flow_id,),
+    )
+    return [_row_to_dict(r) for r in cursor.fetchall()]
+
+
+def _fetch_screen_children(conn: sqlite3.Connection, screen_id: int) -> list[int]:
+    """Return IDs of direct child screens."""
+    cursor = conn.execute(
+        "SELECT id FROM screens WHERE parent_id = ? ORDER BY created_at, id",
+        (screen_id,),
+    )
+    return [row["id"] for row in cursor.fetchall()]
+
+
+def _fetch_component_used_in(conn: sqlite3.Connection, component_id: int) -> list[dict]:
+    """Return list of {id, name} dicts for screens that use this component."""
+    cursor = conn.execute(
+        """
+        SELECT s.id, s.name
+        FROM component_usage cu
+        JOIN screens s ON s.id = cu.screen_id
+        WHERE cu.component_id = ?
+        ORDER BY s.name
+        """,
+        (component_id,),
+    )
+    return [_row_to_dict(r) for r in cursor.fetchall()]
+
+
+def _fetch_flow_screens(conn: sqlite3.Connection, flow_id: int) -> list[dict]:
+    """Return list of {id, name} dicts for screens linked to a flow."""
+    cursor = conn.execute(
+        """
+        SELECT s.id, s.name, s.parent_id, s.selected_file, s.status
+        FROM flow_screens fs
+        JOIN screens s ON s.id = fs.screen_id
+        WHERE fs.flow_id = ?
+        ORDER BY s.name
+        """,
+        (flow_id,),
+    )
+    return [_row_to_dict(r) for r in cursor.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Screen CRUD
+# ---------------------------------------------------------------------------
+
+def list_screens() -> list[dict]:
+    """Return all screens, each with variants and children (list of child IDs)."""
+    conn = get_db()
+    cursor = conn.execute("SELECT * FROM screens ORDER BY created_at, id")
+    rows = cursor.fetchall()
+
+    screens = []
+    for row in rows:
+        screen = _row_to_dict(row)
+        screen["variants"] = _fetch_screen_variants(conn, screen["id"])
+        screen["children"] = _fetch_screen_children(conn, screen["id"])
+        screens.append(screen)
+
+    conn.close()
+    return screens
+
+
+def get_screen(screen_id: int) -> dict | None:
+    """Return a single screen with variants and children, or None."""
+    assert isinstance(screen_id, int), f"screen_id must be int: {screen_id!r}"
+    assert screen_id > 0, f"screen_id must be positive: {screen_id}"
+
+    conn = get_db()
+    row = conn.execute("SELECT * FROM screens WHERE id = ?", (screen_id,)).fetchone()
+    if row is None:
+        conn.close()
+        return None
+
+    screen = _row_to_dict(row)
+    screen["variants"] = _fetch_screen_variants(conn, screen_id)
+    screen["children"] = _fetch_screen_children(conn, screen_id)
+    conn.close()
+    return screen
+
+
+def create_screen(
+    name: str,
+    description: str | None = None,
+    usage: str | None = None,
+) -> dict:
+    """Insert a new screen and return it as a dict."""
+    assert name and name.strip(), "name must not be empty"
+
+    conn = get_db()
+    cursor = conn.execute(
+        "INSERT INTO screens (name, description, usage) VALUES (?, ?, ?)",
+        (name.strip(), description, usage),
+    )
+    screen_id = cursor.lastrowid
+    assert screen_id is not None, "INSERT into screens returned no rowid"
+
+    conn.commit()
+    result = get_screen(screen_id)
+    conn.close()
+
+    assert result is not None, f"Newly created screen {screen_id} not found"
+    return result
+
+
+def update_screen(screen_id: int, **fields) -> dict | None:
+    """Update allowed fields on a screen. Returns updated screen or None if not found."""
+    assert isinstance(screen_id, int), f"screen_id must be int: {screen_id!r}"
+    assert screen_id > 0, f"screen_id must be positive: {screen_id}"
+    assert fields, "At least one field required for update"
+
+    unknown = set(fields) - _VALID_SCREEN_FIELDS
+    assert not unknown, f"Unknown screen fields: {unknown}"
+
+    if "status" in fields:
+        assert fields["status"] in _VALID_STATUSES, f"Invalid status: {fields['status']!r}"
+
+    assignments = ", ".join(f"{col} = ?" for col in fields)
+    values = list(fields.values())
+    values.append(screen_id)
+
+    conn = get_db()
+    conn.execute(
+        f"UPDATE screens SET {assignments}, updated_at = datetime('now') WHERE id = ?",
+        values,
+    )
+    conn.commit()
+    result = get_screen(screen_id)
+    conn.close()
+    return result
+
+
+def delete_screen(screen_id: int) -> bool:
+    """Delete a screen and cascade variants. Returns True if a row was deleted."""
+    assert isinstance(screen_id, int), f"screen_id must be int: {screen_id!r}"
+    assert screen_id > 0, f"screen_id must be positive: {screen_id}"
+
+    conn = get_db()
+    cursor = conn.execute("DELETE FROM screens WHERE id = ?", (screen_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def set_screen_parent(screen_id: int, parent_id: int | None) -> dict | None:
+    """Set or clear the parent of a screen. Returns updated screen or None if not found."""
+    assert isinstance(screen_id, int), f"screen_id must be int: {screen_id!r}"
+    assert screen_id > 0, f"screen_id must be positive: {screen_id}"
+    assert parent_id is None or isinstance(parent_id, int), (
+        f"parent_id must be int or None: {parent_id!r}"
+    )
+    assert parent_id != screen_id, "A screen cannot be its own parent"
+
+    conn = get_db()
+    exists = conn.execute("SELECT 1 FROM screens WHERE id = ?", (screen_id,)).fetchone()
+    if exists is None:
+        conn.close()
+        return None
+
+    conn.execute(
+        "UPDATE screens SET parent_id = ?, updated_at = datetime('now') WHERE id = ?",
+        (parent_id, screen_id),
+    )
+    conn.commit()
+    result = get_screen(screen_id)
+    conn.close()
+    return result
+
+
+def create_screen_variant(
+    screen_id: int,
+    file: str,
+    label: str | None = None,
+    ui_description: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Insert a new variant for a screen. Returns the variant as a dict."""
+    assert isinstance(screen_id, int), f"screen_id must be int: {screen_id!r}"
+    assert screen_id > 0, f"screen_id must be positive: {screen_id}"
+    assert file and file.strip(), "file must not be empty"
+
+    conn = get_db()
+    exists = conn.execute("SELECT 1 FROM screens WHERE id = ?", (screen_id,)).fetchone()
+    if exists is None:
+        conn.close()
+        raise ValueError(f"Screen {screen_id} not found")
+
+    cursor = conn.execute(
+        """
+        INSERT INTO screen_variants (screen_id, file, label, ui_description, notes)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (screen_id, file.strip(), label, ui_description, notes),
+    )
+    variant_id = cursor.lastrowid
+    assert variant_id is not None, "INSERT into screen_variants returned no rowid"
+
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM screen_variants WHERE id = ?", (variant_id,)
+    ).fetchone()
+    conn.close()
+
+    assert row is not None, f"Newly created screen_variant {variant_id} not found"
+    return _row_to_dict(row)
+
+
+def select_screen_variant(variant_id: int) -> dict | None:
+    """
+    Set a screen variant's file as the parent screen's selected_file.
+    Returns the updated parent screen dict, or None if variant not found.
+    """
+    assert isinstance(variant_id, int), f"variant_id must be int: {variant_id!r}"
+    assert variant_id > 0, f"variant_id must be positive: {variant_id}"
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT screen_id, file FROM screen_variants WHERE id = ?", (variant_id,)
+    ).fetchone()
+
+    if row is None:
+        conn.close()
+        return None
+
+    screen_id = row["screen_id"]
+    file      = row["file"]
+
+    assert screen_id is not None, "screen_variant has null screen_id"
+    assert file,                  "screen_variant has empty file"
+
+    conn.execute(
+        "UPDATE screens SET selected_file = ?, updated_at = datetime('now') WHERE id = ?",
+        (file, screen_id),
+    )
+    conn.commit()
+    result = get_screen(screen_id)
+    conn.close()
+    return result
+
+
+def delete_screen_variant(variant_id: int) -> bool:
+    """Delete a screen variant by id. Returns True if a row was deleted."""
+    assert isinstance(variant_id, int), f"variant_id must be int: {variant_id!r}"
+    assert variant_id > 0, f"variant_id must be positive: {variant_id}"
+
+    conn = get_db()
+    cursor = conn.execute("DELETE FROM screen_variants WHERE id = ?", (variant_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def update_screen_variant_screenshot(variant_id: int, screenshot_path: str) -> bool:
+    conn = get_db()
+    cursor = conn.execute(
+        "UPDATE screen_variants SET screenshot = ? WHERE id = ?",
+        (screenshot_path, variant_id),
+    )
+    conn.commit()
+    conn.close()
+    return cursor.rowcount > 0
+
+
+def get_screen_tree() -> list[dict]:
+    """
+    Return root screens (parent_id IS NULL), each with nested 'children' list recursively.
+    Builds the tree in Python using an adjacency list — no recursive SQL.
+    """
+    conn = get_db()
+    cursor = conn.execute("SELECT * FROM screens ORDER BY created_at, id")
+    all_rows = [_row_to_dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    # Build adjacency list: parent_id → [child_row, ...]
+    children_by_parent: dict[int | None, list[dict]] = {}
+    for screen in all_rows:
+        parent_id = screen["parent_id"]
+        children_by_parent.setdefault(parent_id, []).append(screen)
+
+    def _attach_children(node: dict) -> dict:
+        """Recursively attach children to a node dict."""
+        node_id = node["id"]
+        child_rows = children_by_parent.get(node_id, [])
+        node["children"] = [_attach_children(c) for c in child_rows]
+        return node
+
+    roots = children_by_parent.get(None, [])
+    return [_attach_children(r) for r in roots]
+
+
+# ---------------------------------------------------------------------------
+# Component CRUD
+# ---------------------------------------------------------------------------
+
+def list_components() -> list[dict]:
+    """Return all components, each with variants and used_in (screen id+name pairs)."""
+    conn = get_db()
+    cursor = conn.execute("SELECT * FROM components ORDER BY created_at, id")
+    rows = cursor.fetchall()
+
+    components = []
+    for row in rows:
+        component = _row_to_dict(row)
+        component["variants"] = _fetch_component_variants(conn, component["id"])
+        component["used_in"]  = _fetch_component_used_in(conn, component["id"])
+        components.append(component)
+
+    conn.close()
+    return components
+
+
+def get_component(component_id: int) -> dict | None:
+    """Return a single component with variants and used_in, or None."""
+    assert isinstance(component_id, int), f"component_id must be int: {component_id!r}"
+    assert component_id > 0, f"component_id must be positive: {component_id}"
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM components WHERE id = ?", (component_id,)
+    ).fetchone()
+    if row is None:
+        conn.close()
+        return None
+
+    component = _row_to_dict(row)
+    component["variants"] = _fetch_component_variants(conn, component_id)
+    component["used_in"]  = _fetch_component_used_in(conn, component_id)
+    conn.close()
+    return component
+
+
+def create_component(
+    name: str,
+    description: str | None = None,
+    usage: str | None = None,
+) -> dict:
+    """Insert a new component and return it as a dict."""
+    assert name and name.strip(), "name must not be empty"
+
+    conn = get_db()
+    cursor = conn.execute(
+        "INSERT INTO components (name, description, usage) VALUES (?, ?, ?)",
+        (name.strip(), description, usage),
+    )
+    component_id = cursor.lastrowid
+    assert component_id is not None, "INSERT into components returned no rowid"
+
+    conn.commit()
+    result = get_component(component_id)
+    conn.close()
+
+    assert result is not None, f"Newly created component {component_id} not found"
+    return result
+
+
+def update_component(component_id: int, **fields) -> dict | None:
+    """Update allowed fields on a component. Returns updated component or None if not found."""
+    assert isinstance(component_id, int), f"component_id must be int: {component_id!r}"
+    assert component_id > 0, f"component_id must be positive: {component_id}"
+    assert fields, "At least one field required for update"
+
+    unknown = set(fields) - _VALID_COMPONENT_FIELDS
+    assert not unknown, f"Unknown component fields: {unknown}"
+
+    if "status" in fields:
+        assert fields["status"] in _VALID_STATUSES, f"Invalid status: {fields['status']!r}"
+
+    assignments = ", ".join(f"{col} = ?" for col in fields)
+    values = list(fields.values())
+    values.append(component_id)
+
+    conn = get_db()
+    conn.execute(
+        f"UPDATE components SET {assignments}, updated_at = datetime('now') WHERE id = ?",
+        values,
+    )
+    conn.commit()
+    result = get_component(component_id)
+    conn.close()
+    return result
+
+
+def delete_component(component_id: int) -> bool:
+    """Delete a component and cascade variants. Returns True if a row was deleted."""
+    assert isinstance(component_id, int), f"component_id must be int: {component_id!r}"
+    assert component_id > 0, f"component_id must be positive: {component_id}"
+
+    conn = get_db()
+    cursor = conn.execute("DELETE FROM components WHERE id = ?", (component_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def create_component_variant(
+    component_id: int,
+    file: str,
+    label: str | None = None,
+    ui_description: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Insert a new variant for a component. Returns the variant as a dict."""
+    assert isinstance(component_id, int), f"component_id must be int: {component_id!r}"
+    assert component_id > 0, f"component_id must be positive: {component_id}"
+    assert file and file.strip(), "file must not be empty"
+
+    conn = get_db()
+    exists = conn.execute(
+        "SELECT 1 FROM components WHERE id = ?", (component_id,)
+    ).fetchone()
+    if exists is None:
+        conn.close()
+        raise ValueError(f"Component {component_id} not found")
+
+    cursor = conn.execute(
+        """
+        INSERT INTO component_variants (component_id, file, label, ui_description, notes)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (component_id, file.strip(), label, ui_description, notes),
+    )
+    variant_id = cursor.lastrowid
+    assert variant_id is not None, "INSERT into component_variants returned no rowid"
+
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM component_variants WHERE id = ?", (variant_id,)
+    ).fetchone()
+    conn.close()
+
+    assert row is not None, f"Newly created component_variant {variant_id} not found"
+    return _row_to_dict(row)
+
+
+def select_component_variant(variant_id: int) -> dict | None:
+    """
+    Set a component variant's file as the parent component's selected_file.
+    Returns the updated parent component dict, or None if variant not found.
+    """
+    assert isinstance(variant_id, int), f"variant_id must be int: {variant_id!r}"
+    assert variant_id > 0, f"variant_id must be positive: {variant_id}"
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT component_id, file FROM component_variants WHERE id = ?", (variant_id,)
+    ).fetchone()
+
+    if row is None:
+        conn.close()
+        return None
+
+    component_id = row["component_id"]
+    file         = row["file"]
+
+    assert component_id is not None, "component_variant has null component_id"
+    assert file,                     "component_variant has empty file"
+
+    conn.execute(
+        "UPDATE components SET selected_file = ?, updated_at = datetime('now') WHERE id = ?",
+        (file, component_id),
+    )
+    conn.commit()
+    result = get_component(component_id)
+    conn.close()
+    return result
+
+
+def delete_component_variant(variant_id: int) -> bool:
+    """Delete a component variant by id. Returns True if a row was deleted."""
+    assert isinstance(variant_id, int), f"variant_id must be int: {variant_id!r}"
+    assert variant_id > 0, f"variant_id must be positive: {variant_id}"
+
+    conn = get_db()
+    cursor = conn.execute("DELETE FROM component_variants WHERE id = ?", (variant_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def update_component_variant_screenshot(variant_id: int, screenshot_path: str) -> bool:
+    conn = get_db()
+    cursor = conn.execute(
+        "UPDATE component_variants SET screenshot = ? WHERE id = ?",
+        (screenshot_path, variant_id),
+    )
+    conn.commit()
+    conn.close()
+    return cursor.rowcount > 0
+
+
+def link_component_screen(component_id: int, screen_id: int) -> bool:
+    """Link a component to a screen. INSERT OR IGNORE — always returns True."""
+    assert isinstance(component_id, int), f"component_id must be int: {component_id!r}"
+    assert component_id > 0, f"component_id must be positive: {component_id}"
+    assert isinstance(screen_id, int), f"screen_id must be int: {screen_id!r}"
+    assert screen_id > 0, f"screen_id must be positive: {screen_id}"
+
+    conn = get_db()
+    conn.execute(
+        "INSERT OR IGNORE INTO component_usage (component_id, screen_id) VALUES (?, ?)",
+        (component_id, screen_id),
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def unlink_component_screen(component_id: int, screen_id: int) -> bool:
+    """Unlink a component from a screen. Returns True if a row was deleted."""
+    assert isinstance(component_id, int), f"component_id must be int: {component_id!r}"
+    assert component_id > 0, f"component_id must be positive: {component_id}"
+    assert isinstance(screen_id, int), f"screen_id must be int: {screen_id!r}"
+    assert screen_id > 0, f"screen_id must be positive: {screen_id}"
+
+    conn = get_db()
+    cursor = conn.execute(
+        "DELETE FROM component_usage WHERE component_id = ? AND screen_id = ?",
+        (component_id, screen_id),
+    )
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+# ---------------------------------------------------------------------------
+# Flow CRUD
+# ---------------------------------------------------------------------------
+
+def list_flows() -> list[dict]:
+    """Return all flows, each with variants and screens (linked screen id+name pairs)."""
+    conn = get_db()
+    cursor = conn.execute("SELECT * FROM flows ORDER BY created_at, id")
+    rows = cursor.fetchall()
+
+    flows = []
+    for row in rows:
+        flow = _row_to_dict(row)
+        flow["variants"] = _fetch_flow_variants(conn, flow["id"])
+        flow["screens"]  = _fetch_flow_screens(conn, flow["id"])
+        flows.append(flow)
+
+    conn.close()
+    return flows
+
+
+def get_flow(flow_id: int) -> dict | None:
+    """Return a single flow with variants and linked screens, or None."""
+    assert isinstance(flow_id, int), f"flow_id must be int: {flow_id!r}"
+    assert flow_id > 0, f"flow_id must be positive: {flow_id}"
+
+    conn = get_db()
+    row = conn.execute("SELECT * FROM flows WHERE id = ?", (flow_id,)).fetchone()
+    if row is None:
+        conn.close()
+        return None
+
+    flow = _row_to_dict(row)
+    flow["variants"] = _fetch_flow_variants(conn, flow_id)
+    flow["screens"]  = _fetch_flow_screens(conn, flow_id)
+    conn.close()
+    return flow
+
+
+def create_flow(
+    name: str,
+    description: str | None = None,
+    usage: str | None = None,
+) -> dict:
+    """Insert a new flow and return it as a dict."""
+    assert name and name.strip(), "name must not be empty"
+
+    conn = get_db()
+    cursor = conn.execute(
+        "INSERT INTO flows (name, description, usage) VALUES (?, ?, ?)",
+        (name.strip(), description, usage),
+    )
+    flow_id = cursor.lastrowid
+    assert flow_id is not None, "INSERT into flows returned no rowid"
+
+    conn.commit()
+    result = get_flow(flow_id)
+    conn.close()
+
+    assert result is not None, f"Newly created flow {flow_id} not found"
+    return result
+
+
+def update_flow(flow_id: int, **fields) -> dict | None:
+    """Update allowed fields on a flow. Returns updated flow or None if not found."""
+    assert isinstance(flow_id, int), f"flow_id must be int: {flow_id!r}"
+    assert flow_id > 0, f"flow_id must be positive: {flow_id}"
+    assert fields, "At least one field required for update"
+
+    unknown = set(fields) - _VALID_FLOW_FIELDS
+    assert not unknown, f"Unknown flow fields: {unknown}"
+
+    if "status" in fields:
+        assert fields["status"] in _VALID_STATUSES, f"Invalid status: {fields['status']!r}"
+
+    assignments = ", ".join(f"{col} = ?" for col in fields)
+    values = list(fields.values())
+    values.append(flow_id)
+
+    conn = get_db()
+    conn.execute(
+        f"UPDATE flows SET {assignments}, updated_at = datetime('now') WHERE id = ?",
+        values,
+    )
+    conn.commit()
+    result = get_flow(flow_id)
+    conn.close()
+    return result
+
+
+def delete_flow(flow_id: int) -> bool:
+    """Delete a flow and cascade variants. Returns True if a row was deleted."""
+    assert isinstance(flow_id, int), f"flow_id must be int: {flow_id!r}"
+    assert flow_id > 0, f"flow_id must be positive: {flow_id}"
+
+    conn = get_db()
+    cursor = conn.execute("DELETE FROM flows WHERE id = ?", (flow_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def create_flow_variant(
+    flow_id: int,
+    file: str,
+    label: str | None = None,
+    ui_description: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Insert a new variant for a flow. Returns the variant as a dict."""
+    assert isinstance(flow_id, int), f"flow_id must be int: {flow_id!r}"
+    assert flow_id > 0, f"flow_id must be positive: {flow_id}"
+    assert file and file.strip(), "file must not be empty"
+
+    conn = get_db()
+    exists = conn.execute("SELECT 1 FROM flows WHERE id = ?", (flow_id,)).fetchone()
+    if exists is None:
+        conn.close()
+        raise ValueError(f"Flow {flow_id} not found")
+
+    cursor = conn.execute(
+        """
+        INSERT INTO flow_variants (flow_id, file, label, ui_description, notes)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (flow_id, file.strip(), label, ui_description, notes),
+    )
+    variant_id = cursor.lastrowid
+    assert variant_id is not None, "INSERT into flow_variants returned no rowid"
+
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM flow_variants WHERE id = ?", (variant_id,)
+    ).fetchone()
+    conn.close()
+
+    assert row is not None, f"Newly created flow_variant {variant_id} not found"
+    return _row_to_dict(row)
+
+
+def select_flow_variant(variant_id: int) -> dict | None:
+    """
+    Set a flow variant's file as the parent flow's selected_file.
+    Returns the updated parent flow dict, or None if variant not found.
+    """
+    assert isinstance(variant_id, int), f"variant_id must be int: {variant_id!r}"
+    assert variant_id > 0, f"variant_id must be positive: {variant_id}"
+
+    conn = get_db()
+    row = conn.execute(
+        "SELECT flow_id, file FROM flow_variants WHERE id = ?", (variant_id,)
+    ).fetchone()
+
+    if row is None:
+        conn.close()
+        return None
+
+    flow_id = row["flow_id"]
+    file    = row["file"]
+
+    assert flow_id is not None, "flow_variant has null flow_id"
+    assert file,                "flow_variant has empty file"
+
+    conn.execute(
+        "UPDATE flows SET selected_file = ?, updated_at = datetime('now') WHERE id = ?",
+        (file, flow_id),
+    )
+    conn.commit()
+    result = get_flow(flow_id)
+    conn.close()
+    return result
+
+
+def delete_flow_variant(variant_id: int) -> bool:
+    """Delete a flow variant by id. Returns True if a row was deleted."""
+    assert isinstance(variant_id, int), f"variant_id must be int: {variant_id!r}"
+    assert variant_id > 0, f"variant_id must be positive: {variant_id}"
+
+    conn = get_db()
+    cursor = conn.execute("DELETE FROM flow_variants WHERE id = ?", (variant_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def update_flow_variant_screenshot(variant_id: int, screenshot_path: str) -> bool:
+    conn = get_db()
+    cursor = conn.execute(
+        "UPDATE flow_variants SET screenshot = ? WHERE id = ?",
+        (screenshot_path, variant_id),
+    )
+    conn.commit()
+    conn.close()
+    return cursor.rowcount > 0
+
+
+def link_flow_screen(flow_id: int, screen_id: int) -> bool:
+    """Link a screen to a flow. INSERT OR IGNORE — always returns True."""
+    assert isinstance(flow_id, int), f"flow_id must be int: {flow_id!r}"
+    assert flow_id > 0, f"flow_id must be positive: {flow_id}"
+    assert isinstance(screen_id, int), f"screen_id must be int: {screen_id!r}"
+    assert screen_id > 0, f"screen_id must be positive: {screen_id}"
+
+    conn = get_db()
+    conn.execute(
+        "INSERT OR IGNORE INTO flow_screens (flow_id, screen_id) VALUES (?, ?)",
+        (flow_id, screen_id),
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def unlink_flow_screen(flow_id: int, screen_id: int) -> bool:
+    """Unlink a screen from a flow. Returns True if a row was deleted."""
+    assert isinstance(flow_id, int), f"flow_id must be int: {flow_id!r}"
+    assert flow_id > 0, f"flow_id must be positive: {flow_id}"
+    assert isinstance(screen_id, int), f"screen_id must be int: {screen_id!r}"
+    assert screen_id > 0, f"screen_id must be positive: {screen_id}"
+
+    conn = get_db()
+    cursor = conn.execute(
+        "DELETE FROM flow_screens WHERE flow_id = ? AND screen_id = ?",
+        (flow_id, screen_id),
+    )
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+# ---------------------------------------------------------------------------
+# Seed from design directory
+# ---------------------------------------------------------------------------
+
 _VARIANT_SUFFIX_PATTERN = re.compile(
     r"(-v\d+|_alt\d*|-option-[^.]+)$",
     re.IGNORECASE,
@@ -116,13 +983,14 @@ def _stem_to_name(stem: str) -> str:
 def seed_from_design() -> int:
     """
     Scan DESIGN_DIR for HTML files. Group by stem (stripping variant suffixes).
-    Creates one item per group and one variant per file. Returns count of items created.
+    Creates one screen per group and one screen_variant per file.
+    Returns count of screens created.
     """
-    if not os.path.isdir(DESIGN_DIR):
+    if not DESIGN_DIR.is_dir():
         return 0
 
     html_files = sorted(
-        f for f in os.listdir(DESIGN_DIR) if f.lower().endswith(".html")
+        p.name for p in DESIGN_DIR.iterdir() if p.name.lower().endswith(".html")
     )
 
     if not html_files:
@@ -131,293 +999,39 @@ def seed_from_design() -> int:
     # Map base_stem → [filename, ...]
     groups: dict[str, list[str]] = {}
     for filename in html_files:
-        raw_stem = os.path.splitext(filename)[0]
+        raw_stem  = Path(filename).stem
         base_stem = _VARIANT_SUFFIX_PATTERN.sub("", raw_stem)
         groups.setdefault(base_stem, []).append(filename)
 
     conn = get_db()
-    items_created = 0
+    screens_created = 0
 
     for base_stem, files in groups.items():
-        name = _stem_to_name(base_stem)
+        name   = _stem_to_name(base_stem)
         cursor = conn.execute(
-            "INSERT INTO items (type, name) VALUES (?, ?)",
-            ("screen", name),
+            "INSERT INTO screens (name) VALUES (?)",
+            (name,),
         )
-        item_id = cursor.lastrowid
-        assert item_id is not None, "INSERT into items returned no rowid"
+        screen_id = cursor.lastrowid
+        assert screen_id is not None, "INSERT into screens returned no rowid"
 
         for index, filename in enumerate(files):
             label = f"v{index + 1}"
             conn.execute(
-                "INSERT INTO variants (item_id, file, label) VALUES (?, ?, ?)",
-                (item_id, filename, label),
+                "INSERT INTO screen_variants (screen_id, file, label) VALUES (?, ?, ?)",
+                (screen_id, filename, label),
             )
 
         # First file becomes selected_file
         conn.execute(
-            "UPDATE items SET selected_file = ? WHERE id = ?",
-            (files[0], item_id),
+            "UPDATE screens SET selected_file = ? WHERE id = ?",
+            (files[0], screen_id),
         )
-        items_created += 1
+        screens_created += 1
 
     conn.commit()
     conn.close()
-    return items_created
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _row_to_dict(row: sqlite3.Row) -> dict:
-    """Convert a sqlite3.Row to a plain dict."""
-    return dict(row)
-
-
-def _fetch_variants(conn: sqlite3.Connection, item_id: int) -> list[dict]:
-    """Fetch all variants for an item, ordered by created_at."""
-    cursor = conn.execute(
-        "SELECT * FROM variants WHERE item_id = ? ORDER BY created_at, id",
-        (item_id,),
-    )
-    return [_row_to_dict(r) for r in cursor.fetchall()]
-
-
-def _fetch_item_with_variants(conn: sqlite3.Connection, item_id: int) -> dict | None:
-    """Return item dict with nested 'variants' list, or None if not found."""
-    cursor = conn.execute("SELECT * FROM items WHERE id = ?", (item_id,))
-    row = cursor.fetchone()
-    if row is None:
-        return None
-    item = _row_to_dict(row)
-    item["variants"] = _fetch_variants(conn, item_id)
-    return item
-
-
-# ---------------------------------------------------------------------------
-# Item CRUD
-# ---------------------------------------------------------------------------
-
-_VALID_TYPES    = {"screen", "layout", "component", "flow"}
-_VALID_STATUSES = {"exploring", "approved", "finalised"}
-_VALID_ITEM_FIELDS = {
-    "type", "name", "description", "usage",
-    "selected_file", "rationale", "status",
-}
-
-
-def list_items(type_filter: str | None = None) -> list[dict]:
-    """Return all items with nested variants. Optionally filter by type."""
-    assert type_filter is None or type_filter in _VALID_TYPES, (
-        f"Invalid type_filter: {type_filter!r}"
-    )
-
-    conn = get_db()
-    if type_filter is None:
-        cursor = conn.execute("SELECT * FROM items ORDER BY created_at, id")
-    else:
-        cursor = conn.execute(
-            "SELECT * FROM items WHERE type = ? ORDER BY created_at, id",
-            (type_filter,),
-        )
-
-    rows = cursor.fetchall()
-    items = []
-    for row in rows:
-        item = _row_to_dict(row)
-        item["variants"] = _fetch_variants(conn, item["id"])
-        items.append(item)
-
-    conn.close()
-    return items
-
-
-def get_item(item_id: int) -> dict | None:
-    """Return a single item with nested variants, or None."""
-    assert isinstance(item_id, int), f"item_id must be int: {item_id!r}"
-    assert item_id > 0, f"item_id must be positive: {item_id}"
-
-    conn = get_db()
-    result = _fetch_item_with_variants(conn, item_id)
-    conn.close()
-    return result
-
-
-def create_item(
-    type: str,
-    name: str,
-    description: str | None = None,
-    usage: str | None = None,
-) -> dict:
-    """Insert a new item and return it as a dict."""
-    assert type in _VALID_TYPES, f"Invalid type: {type!r}"
-    assert name and name.strip(), "name must not be empty"
-
-    conn = get_db()
-    cursor = conn.execute(
-        """
-        INSERT INTO items (type, name, description, usage)
-        VALUES (?, ?, ?, ?)
-        """,
-        (type, name.strip(), description, usage),
-    )
-    item_id = cursor.lastrowid
-    assert item_id is not None, "INSERT into items returned no rowid"
-
-    conn.commit()
-    result = _fetch_item_with_variants(conn, item_id)
-    conn.close()
-
-    assert result is not None, f"Newly created item {item_id} not found"
-    return result
-
-
-def update_item(item_id: int, **fields) -> dict | None:
-    """Update allowed fields on an item. Returns updated item or None if not found."""
-    assert isinstance(item_id, int), f"item_id must be int: {item_id!r}"
-    assert item_id > 0, f"item_id must be positive: {item_id}"
-    assert fields, "At least one field required for update"
-
-    unknown = set(fields) - _VALID_ITEM_FIELDS
-    assert not unknown, f"Unknown item fields: {unknown}"
-
-    if "type" in fields:
-        assert fields["type"] in _VALID_TYPES, f"Invalid type: {fields['type']!r}"
-    if "status" in fields:
-        assert fields["status"] in _VALID_STATUSES, f"Invalid status: {fields['status']!r}"
-
-    assignments = ", ".join(f"{col} = ?" for col in fields)
-    values = list(fields.values())
-    values.append(item_id)
-
-    conn = get_db()
-    conn.execute(
-        f"UPDATE items SET {assignments}, updated_at = datetime('now') WHERE id = ?",
-        values,
-    )
-    conn.commit()
-    result = _fetch_item_with_variants(conn, item_id)
-    conn.close()
-    return result
-
-
-def delete_item(item_id: int) -> bool:
-    """Delete item and cascade variants. Returns True if a row was deleted."""
-    assert isinstance(item_id, int), f"item_id must be int: {item_id!r}"
-    assert item_id > 0, f"item_id must be positive: {item_id}"
-
-    conn = get_db()
-    cursor = conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
-    deleted = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return deleted
-
-
-# ---------------------------------------------------------------------------
-# Variant CRUD
-# ---------------------------------------------------------------------------
-
-def create_variant(
-    item_id: int,
-    file: str,
-    label: str | None = None,
-    ui_description: str | None = None,
-    notes: str | None = None,
-) -> dict:
-    """Insert a new variant for an item. Returns the variant as a dict."""
-    assert isinstance(item_id, int), f"item_id must be int: {item_id!r}"
-    assert item_id > 0, f"item_id must be positive: {item_id}"
-    assert file and file.strip(), "file must not be empty"
-
-    conn = get_db()
-
-    # Validate item exists before inserting
-    exists = conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone()
-    if exists is None:
-        conn.close()
-        raise ValueError(f"Item {item_id} not found")
-
-    cursor = conn.execute(
-        """
-        INSERT INTO variants (item_id, file, label, ui_description, notes)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (item_id, file.strip(), label, ui_description, notes),
-    )
-    variant_id = cursor.lastrowid
-    assert variant_id is not None, "INSERT into variants returned no rowid"
-
-    conn.commit()
-    row = conn.execute("SELECT * FROM variants WHERE id = ?", (variant_id,)).fetchone()
-    conn.close()
-
-    assert row is not None, f"Newly created variant {variant_id} not found"
-    return _row_to_dict(row)
-
-
-def delete_variant(variant_id: int) -> bool:
-    """Delete a variant by id. Returns True if a row was deleted."""
-    assert isinstance(variant_id, int), f"variant_id must be int: {variant_id!r}"
-    assert variant_id > 0, f"variant_id must be positive: {variant_id}"
-
-    conn = get_db()
-    cursor = conn.execute("DELETE FROM variants WHERE id = ?", (variant_id,))
-    deleted = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return deleted
-
-
-def select_variant(variant_id: int) -> dict | None:
-    """
-    Set a variant's file as the parent item's selected_file.
-    Returns the updated parent item dict, or None if variant not found.
-    """
-    assert isinstance(variant_id, int), f"variant_id must be int: {variant_id!r}"
-    assert variant_id > 0, f"variant_id must be positive: {variant_id}"
-
-    conn = get_db()
-    row = conn.execute(
-        "SELECT item_id, file FROM variants WHERE id = ?", (variant_id,)
-    ).fetchone()
-
-    if row is None:
-        conn.close()
-        return None
-
-    item_id = row["item_id"]
-    file    = row["file"]
-
-    assert item_id is not None, "variant has null item_id"
-    assert file,                "variant has empty file"
-
-    conn.execute(
-        "UPDATE items SET selected_file = ?, updated_at = datetime('now') WHERE id = ?",
-        (file, item_id),
-    )
-    conn.commit()
-    result = _fetch_item_with_variants(conn, item_id)
-    conn.close()
-    return result
-
-
-def update_variant_screenshot(variant_id: int, screenshot_path: str) -> bool:
-    """Store a relative screenshot path on a variant. Returns True on success."""
-    assert isinstance(variant_id, int), f"variant_id must be int: {variant_id!r}"
-    assert variant_id > 0, f"variant_id must be positive: {variant_id}"
-    assert screenshot_path and screenshot_path.strip(), "screenshot_path must not be empty"
-
-    conn = get_db()
-    cursor = conn.execute(
-        "UPDATE variants SET screenshot = ? WHERE id = ?",
-        (screenshot_path.strip(), variant_id),
-    )
-    updated = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return updated
+    return screens_created
 
 
 # ---------------------------------------------------------------------------
@@ -430,24 +1044,63 @@ _DECISIONS_END   = "<!-- DECISIONS-END -->"
 
 def sync_system() -> str:
     """
-    Read approved/finalised items from DB and write a decisions table
+    Read approved/finalised items from all three tables and write a decisions table
     between the marker comments in system.md. Returns the new file content.
     """
-    assert os.path.exists(SYSTEM_MD_PATH), (
-        f"system.md not found at {SYSTEM_MD_PATH!r} — run init first"
+    assert SYSTEM_MD_PATH.exists(), (
+        f"system.md not found at {str(SYSTEM_MD_PATH)!r} — run init first"
     )
 
     conn = get_db()
-    cursor = conn.execute(
-        """
-        SELECT id, type, name, status, rationale, selected_file
-        FROM items
-        WHERE status IN ('approved', 'finalised')
-        ORDER BY type, name
-        """,
-    )
-    decided_items = [_row_to_dict(r) for r in cursor.fetchall()]
+
+    screen_rows = [
+        _row_to_dict(r) for r in conn.execute(
+            """
+            SELECT id, name, status, rationale, selected_file
+            FROM screens
+            WHERE status IN ('approved', 'finalised')
+            ORDER BY name
+            """
+        ).fetchall()
+    ]
+
+    component_rows = [
+        _row_to_dict(r) for r in conn.execute(
+            """
+            SELECT id, name, status, rationale, selected_file
+            FROM components
+            WHERE status IN ('approved', 'finalised')
+            ORDER BY name
+            """
+        ).fetchall()
+    ]
+
+    flow_rows = [
+        _row_to_dict(r) for r in conn.execute(
+            """
+            SELECT id, name, status, rationale, selected_file
+            FROM flows
+            WHERE status IN ('approved', 'finalised')
+            ORDER BY name
+            """
+        ).fetchall()
+    ]
+
     conn.close()
+
+    # Merge all rows with explicit type label
+    decided_items: list[dict] = []
+    for row in screen_rows:
+        row["type"] = "screen"
+        decided_items.append(row)
+    for row in component_rows:
+        row["type"] = "component"
+        decided_items.append(row)
+    for row in flow_rows:
+        row["type"] = "flow"
+        decided_items.append(row)
+
+    decided_items.sort(key=lambda r: (r["type"], r["name"]))
 
     # Build decisions table
     lines: list[str] = []
