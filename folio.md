@@ -103,7 +103,15 @@ Never reimplement a component that already exists as approved.
 
 ## After every design iteration — mandatory recording
 
-After writing or modifying an HTML file, record what changed:
+After writing or modifying an HTML file, record what changed using the lightweight log command:
+
+```bash
+folio log --type screen|component|flow --id N "what changed and why"
+```
+
+One line, one string. This feeds `folio suggest` automatically. Use it immediately after every iteration.
+
+For structured delta recording (when you need from/to values or specific change types):
 
 ```bash
 folio screens change --id N \
@@ -114,7 +122,7 @@ folio screens change --id N \
   --reason "why this change"
 ```
 
-Do this for every meaningful change — one `change` call per distinct element modified. If the command warns "target was changed N times before", check if this has already been tried and failed before proceeding.
+If the command warns "target was changed N times before", check if this has already been tried and failed before proceeding.
 
 Then take a screenshot and read it:
 
@@ -188,6 +196,8 @@ folio sync-system
 
 Rationale is mandatory before `set-status approved`. If missing, ask the user first.
 
+Note: selecting a variant via the dashboard automatically prompts for rationale — no separate CLI call needed in that flow.
+
 **Finalising** — locked, no further changes:
 
 ```bash
@@ -246,7 +256,12 @@ folio screens show --id N
 folio screens set-status --id N --status exploring|approved|finalised
 folio screens set-rationale --id N --rationale "..."
 folio screens set-parent --id N --parent N
+folio screens rename --id N --name "..."
+folio screens delete --id N
+folio screens set-description --id N --description "..."
 folio screens select-variant --variant-id N
+folio screens remove-variant --variant-id N
+folio screens move-variant --variant-id N --to-screen N
 folio screens set-hypothesis --id N --hypothesis "..."
 folio screens set-focus --id N --area "..."
 folio screens needs-review --id N
@@ -289,8 +304,12 @@ folio flows clear-needs-review --id N
 folio flows change --id N --type T --target "..." --from "..." --to "..."
 folio flows record-outcome --delta-id N --outcome "..."
 
+# Logging (lightweight, preferred over screens change)
+folio log --type screen|component|flow --id N "what changed and why"
+
 # Shared
 folio add-variant --type screen|component|flow --id N --file "file.html" [--label "..."] [--rationale "..."]
+# Note: --file accepts absolute paths — folio copies the file into .folio/design/ automatically
 folio screenshot --type screen|component|flow --id N [--width 1280] [--height 800]
 folio sync-system
 folio serve [--port N]
@@ -308,9 +327,9 @@ Every design pass follows this exact sequence — no shortcuts:
 folio context        → read current state
 [write / edit HTML]
 folio screenshot     → see actual output
-folio screens change → record what changed and why
+folio log            → record what changed and why (one line)
 [user gives feedback]
-folio record-outcome → capture the result
+folio record-outcome → capture the result (only if using screens change)
 ```
 
 If stuck: `folio suggest` → paste prompt → iterate.
@@ -324,6 +343,12 @@ If re-orienting: `folio explain` → resume from ground truth.
 folio serve          # starts at http://localhost:7842
 folio serve --stop
 ```
+
+Dashboard features:
+- **Flagged** sidebar tab — queue of all variants flagged `needs-revision` across all types
+- **Compare ↗** button on any item with 2+ variants — side-by-side iframe view
+- Entity rationale shown on card, clickable to edit
+- Screen cards show which components are linked to them
 
 ---
 

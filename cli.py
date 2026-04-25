@@ -217,14 +217,21 @@ def _cmd_init(_args: argparse.Namespace) -> None:
     db.init_db()
     print("Initialized: DB schema created, screenshots dir ready.")
 
+    top_level_design = Path.cwd() / "design"
+    if top_level_design.is_dir():
+        print(
+            "Warning: found top-level design/ directory. "
+            "Folio serves files from .folio/design/ — move or copy your files there."
+        )
+
     if db.DESIGN_DIR.is_dir():
         count = db.seed_from_design()
         if count > 0:
-            print(f"Seeded {count} screen(s) from design/.")
+            print(f"Seeded {count} screen(s) from .folio/design/.")
         else:
-            print("design/ found but no HTML files to seed.")
+            print(".folio/design/ found but no HTML files to seed.")
     else:
-        print("No design/ directory found — skipping seed.")
+        print("No .folio/design/ directory found — skipping seed.")
 
 
 _CHROME_CANDIDATES = [
@@ -342,13 +349,18 @@ def _cmd_context(args: argparse.Namespace) -> None:
     label = entity_type.capitalize()
     review_label = "yes" if item.get("needs_review") else "no"
     print(f"=== CONTEXT: {label} #{item['id']} — {item['name']} ===")
+
+    # Hypothesis and focus first — they are the active constraints
+    if item.get("hypothesis"):
+        print(f"HYPOTHESIS: {item['hypothesis']}")
+    if item.get("focus"):
+        print(f"FOCUS:      {item['focus']}")
+    if item.get("hypothesis") or item.get("focus"):
+        print()
+
     print(f"Status: {item['status']}  |  Needs review: {review_label}")
     if item.get("selected_file"):
         print(f"Selected: {item['selected_file']}")
-    if item.get("hypothesis"):
-        print(f"Hypothesis: {item['hypothesis']}")
-    if item.get("focus"):
-        print(f"Focus: {item['focus']}")
 
     # Inject global rules from system.md if markers present.
     if db.SYSTEM_MD_PATH.exists():
@@ -575,11 +587,47 @@ def _cmd_suggest(args: argparse.Namespace) -> None:
         print(f"Variants: {', '.join(variant_parts)}")
 
     print()
-    print("Please suggest 1–3 focused next changes to test. For each suggestion:")
-    print("1. What to change (target element + specific change)")
-    print("2. Why (what hypothesis this tests)")
-    print("3. What outcome would confirm or deny the hypothesis")
+    if item.get("hypothesis") or item.get("focus"):
+        print("CONSTRAINTS (treat these as hard limits, not soft preferences):")
+        if item.get("hypothesis"):
+            print(f"  Hypothesis: {item['hypothesis']}")
+        if item.get("focus"):
+            print(f"  Focus: {item['focus']} — only suggest changes within this area")
+        print()
+    print("Please suggest 1–3 focused next changes to test. Each suggestion must:")
+    print("1. Stay within the focus area above (if set)")
+    print("2. Directly test or advance the hypothesis above (if set)")
+    print("3. Specify: what to change (element + specific change)")
+    print("4. Specify: what outcome would confirm or deny the hypothesis")
     print("---")
+
+
+def _cmd_log(args: argparse.Namespace) -> None:
+    entity_type = args.type
+    entity_id   = args.id
+    message     = args.message
+
+    if entity_type == "screen":
+        item = db.get_screen(entity_id)
+    elif entity_type == "component":
+        item = db.get_component(entity_id)
+    else:
+        item = db.get_flow(entity_id)
+
+    if item is None:
+        print(f"Error: {entity_type} #{entity_id} not found.")
+        sys.exit(1)
+
+    db.add_delta(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        type="other",
+        target=None,
+        from_val=None,
+        to_val=None,
+        reason=message,
+    )
+    print(f"Logged on {entity_type} #{entity_id}: {message}")
 
 
 _PID_FILE = Path.home() / ".folio" / "server.pid"
@@ -614,15 +662,36 @@ def _cmd_serve(args: argparse.Namespace) -> None:
 
 
 def _cmd_add_variant(args: argparse.Namespace) -> None:
+    import shutil as _shutil
+
     item_type = args.type
     item_id   = args.id
-    file      = args.file
     label           = getattr(args, "label", None)
     ui_description  = getattr(args, "ui_description", None)
     notes           = getattr(args, "notes", None)
     rationale       = getattr(args, "rationale", None)
 
     assert item_type in {"screen", "component", "flow"}, f"Unknown type: {item_type!r}"
+
+    src = Path(args.file)
+    if src.is_absolute() or src.parent != Path("."):
+        # Path has directory components — copy the file into DESIGN_DIR.
+        if not src.exists():
+            print(f"Error: file not found: {src}")
+            sys.exit(1)
+        destination = db.DESIGN_DIR / src.name
+        if not destination.exists():
+            db.DESIGN_DIR.mkdir(parents=True, exist_ok=True)
+            _shutil.copy2(src, destination)
+            print(f"Copied {src.name} into .folio/design/")
+        file = src.name
+    else:
+        file = args.file
+        if not (db.DESIGN_DIR / file).exists():
+            print(
+                f"Warning: file not found in .folio/design/ — "
+                "dashboard will 404. Copy the file there first."
+            )
 
     if item_type == "screen":
         variant = db.create_screen_variant(
@@ -784,6 +853,45 @@ def _dispatch_screens(args: argparse.Namespace) -> None:
             print(f"Error: Delta {args.delta_id} not found.")
             sys.exit(1)
         print(f"Delta #{args.delta_id} outcome recorded.")
+
+    elif command == "rename":
+        screen = db.update_screen(args.id, name=args.name)
+        if screen is None:
+            print(f"Error: Screen {args.id} not found.")
+            sys.exit(1)
+        print(f"Screen #{screen['id']} renamed to: {screen['name']}")
+
+    elif command == "delete":
+        deleted = db.delete_screen(args.id)
+        if not deleted:
+            print(f"Error: Screen {args.id} not found.")
+            sys.exit(1)
+        print(f"Screen #{args.id} deleted.")
+
+    elif command == "set-description":
+        screen = db.update_screen(args.id, description=args.description)
+        if screen is None:
+            print(f"Error: Screen {args.id} not found.")
+            sys.exit(1)
+        print(f"Screen #{screen['id']} description updated.")
+
+    elif command == "remove-variant":
+        deleted = db.delete_screen_variant(args.variant_id)
+        if not deleted:
+            print(f"Error: Screen variant {args.variant_id} not found.")
+            sys.exit(1)
+        print(f"Screen variant #{args.variant_id} removed.")
+
+    elif command == "move-variant":
+        try:
+            v = db.move_screen_variant(args.variant_id, args.to_screen)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
+        if v is None:
+            print(f"Error: Screen variant {args.variant_id} not found.")
+            sys.exit(1)
+        print(f"Screen variant #{v['id']} moved to screen #{args.to_screen}.")
 
     else:
         print(f"Error: Unknown screens command: {command!r}")
@@ -1193,6 +1301,24 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--delta-id", type=int, required=True, dest="delta_id")
     p.add_argument("--outcome", required=True)
 
+    p = screens_sub.add_parser("rename", help="Rename a screen")
+    p.add_argument("--id", type=int, required=True)
+    p.add_argument("--name", required=True)
+
+    p = screens_sub.add_parser("delete", help="Delete a screen and all its variants")
+    p.add_argument("--id", type=int, required=True)
+
+    p = screens_sub.add_parser("set-description", help="Update screen description")
+    p.add_argument("--id", type=int, required=True)
+    p.add_argument("--description", required=True)
+
+    p = screens_sub.add_parser("remove-variant", help="Delete a screen variant")
+    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+
+    p = screens_sub.add_parser("move-variant", help="Move a screen variant to a different screen")
+    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+    p.add_argument("--to-screen", type=int, required=True, dest="to_screen")
+
     # --- components ---
     p_components  = sub.add_parser("components", help="Component commands")
     components_sub = p_components.add_subparsers(dest="command", required=True)
@@ -1373,6 +1499,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sug.add_argument("--type", required=True, choices=["screen", "component", "flow"])
     p_sug.add_argument("--id", type=int, required=True)
 
+    p_log = sub.add_parser("log", help="Log a one-line iteration note on a screen/component/flow")
+    p_log.add_argument("--type", required=True, choices=["screen", "component", "flow"])
+    p_log.add_argument("--id", type=int, required=True)
+    p_log.add_argument("message", help="What changed or what you're testing")
+
     return parser
 
 
@@ -1411,6 +1542,8 @@ def main() -> None:
             _cmd_explain(args)
         elif args.group == "suggest":
             _cmd_suggest(args)
+        elif args.group == "log":
+            _cmd_log(args)
         else:
             print(f"Error: Unknown group: {args.group!r}")
             sys.exit(1)

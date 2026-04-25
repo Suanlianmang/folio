@@ -289,6 +289,21 @@ def _fetch_component_used_in(conn: sqlite3.Connection, component_id: int) -> lis
     return [_row_to_dict(r) for r in cursor.fetchall()]
 
 
+def _fetch_screen_components(conn: sqlite3.Connection, screen_id: int) -> list[dict]:
+    """Return list of {id, name} dicts for components linked to this screen."""
+    cursor = conn.execute(
+        """
+        SELECT c.id, c.name
+        FROM component_usage cu
+        JOIN components c ON c.id = cu.component_id
+        WHERE cu.screen_id = ?
+        ORDER BY c.name
+        """,
+        (screen_id,),
+    )
+    return [_row_to_dict(r) for r in cursor.fetchall()]
+
+
 def _fetch_flow_screens(conn: sqlite3.Connection, flow_id: int) -> list[dict]:
     """Return list of {id, name} dicts for screens linked to a flow."""
     cursor = conn.execute(
@@ -317,8 +332,9 @@ def list_screens() -> list[dict]:
     screens = []
     for row in rows:
         screen = _row_to_dict(row)
-        screen["variants"] = _fetch_screen_variants(conn, screen["id"])
-        screen["children"] = _fetch_screen_children(conn, screen["id"])
+        screen["variants"]   = _fetch_screen_variants(conn, screen["id"])
+        screen["children"]   = _fetch_screen_children(conn, screen["id"])
+        screen["components"] = _fetch_screen_components(conn, screen["id"])
         screens.append(screen)
 
     conn.close()
@@ -337,8 +353,9 @@ def get_screen(screen_id: int) -> dict | None:
         return None
 
     screen = _row_to_dict(row)
-    screen["variants"] = _fetch_screen_variants(conn, screen_id)
-    screen["children"] = _fetch_screen_children(conn, screen_id)
+    screen["variants"]   = _fetch_screen_variants(conn, screen_id)
+    screen["children"]   = _fetch_screen_children(conn, screen_id)
+    screen["components"] = _fetch_screen_components(conn, screen_id)
     conn.close()
     return screen
 
@@ -515,6 +532,30 @@ def delete_screen_variant(variant_id: int) -> bool:
     conn.commit()
     conn.close()
     return deleted
+
+
+def move_screen_variant(variant_id: int, to_screen_id: int) -> dict | None:
+    """Move a screen variant to a different screen. Returns updated variant or None if not found."""
+    assert isinstance(variant_id, int) and variant_id > 0
+    assert isinstance(to_screen_id, int) and to_screen_id > 0
+
+    conn = get_db()
+    exists = conn.execute("SELECT 1 FROM screens WHERE id = ?", (to_screen_id,)).fetchone()
+    if exists is None:
+        conn.close()
+        raise ValueError(f"Screen {to_screen_id} not found")
+
+    cursor = conn.execute(
+        "UPDATE screen_variants SET screen_id = ? WHERE id = ?",
+        (to_screen_id, variant_id),
+    )
+    if cursor.rowcount == 0:
+        conn.close()
+        return None
+    conn.commit()
+    row = conn.execute("SELECT * FROM screen_variants WHERE id = ?", (variant_id,)).fetchone()
+    conn.close()
+    return _row_to_dict(row)
 
 
 def update_variant_screenshot(variant_id: int, screenshot_path: str) -> bool:

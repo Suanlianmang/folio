@@ -101,8 +101,20 @@ function renderScreenCard(item) {
     ? `<div class="card-focus">Focus: ${escHtml(item.focus)}</div>`
     : '';
 
+  const entityRationaleHtml = item.rationale
+    ? `<div class="card-rationale" onclick="editEntityRationale(${item.id})">${escHtml(item.rationale)}</div>`
+    : `<div class="card-rationale is-empty" onclick="editEntityRationale(${item.id})">+ rationale</div>`;
+
   const reviewBadge = item.needs_review
     ? `<span class="needs-review-badge">needs review</span>`
+    : '';
+
+  const screenComponents = item.components || [];
+  const screenComponentsHtml = screenComponents.length > 0
+    ? `<div class="linked-section">
+         <div class="linked-heading">Components</div>
+         <div class="linked-tags">${screenComponents.map(c => `<span class="linked-tag">${escHtml(c.name)}</span>`).join('')}</div>
+       </div>`
     : '';
 
   const variantsHtml = renderVariants(item, 'screen');
@@ -132,7 +144,9 @@ function renderScreenCard(item) {
     ${metaHtml}
     ${hypothesisHtml}
     ${focusHtml}
+    ${entityRationaleHtml}
     ${parentHtml}
+    ${screenComponentsHtml}
     <div class="variants-section">
       ${variantsHtml}
     </div>
@@ -175,6 +189,10 @@ function renderComponentCard(item) {
     ? `<div class="card-focus">Focus: ${escHtml(item.focus)}</div>`
     : '';
 
+  const entityRationaleHtml = item.rationale
+    ? `<div class="card-rationale" onclick="editEntityRationale(${item.id})">${escHtml(item.rationale)}</div>`
+    : `<div class="card-rationale is-empty" onclick="editEntityRationale(${item.id})">+ rationale</div>`;
+
   const reviewBadge = item.needs_review
     ? `<span class="needs-review-badge">needs review</span>`
     : '';
@@ -211,6 +229,7 @@ function renderComponentCard(item) {
     ${metaHtml}
     ${hypothesisHtml}
     ${focusHtml}
+    ${entityRationaleHtml}
     <div class="linked-section">
       <div class="linked-heading">Used in</div>
       ${usedInHtml}
@@ -258,6 +277,10 @@ function renderFlowCard(item) {
     ? `<div class="card-focus">Focus: ${escHtml(item.focus)}</div>`
     : '';
 
+  const entityRationaleHtml = item.rationale
+    ? `<div class="card-rationale" onclick="editEntityRationale(${item.id})">${escHtml(item.rationale)}</div>`
+    : `<div class="card-rationale is-empty" onclick="editEntityRationale(${item.id})">+ rationale</div>`;
+
   const reviewBadge = item.needs_review
     ? `<span class="needs-review-badge">needs review</span>`
     : '';
@@ -299,6 +322,7 @@ function renderFlowCard(item) {
     ${metaHtml}
     ${hypothesisHtml}
     ${focusHtml}
+    ${entityRationaleHtml}
     ${screenTreeHtml}
     <div class="variants-section">
       ${variantsHtml}
@@ -404,7 +428,10 @@ function renderVariants(item, entityType) {
     </div>`;
   }).join('');
 
-  return `<div class="variants-heading">Variants (${variants.length})</div>${rows}`;
+  const compareBtn = variants.length >= 2
+    ? `<button class="btn btn-ghost variants-compare-btn" onclick="openCompareModal(this)" data-variants="${escAttr(JSON.stringify(variants))}" data-name="${escAttr(item.name)}">Compare ↗</button>`
+    : '';
+  return `<div class="variants-heading-row"><span class="variants-heading">Variants (${variants.length})</span>${compareBtn}</div>${rows}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +457,90 @@ async function renderSystem() {
   }
 
   container.innerHTML = `<div class="system-content">${html}</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Rendering — flagged tab
+// ---------------------------------------------------------------------------
+
+async function showFlaggedTab() {
+  document.querySelectorAll('.sidebar-tab').forEach(b => b.classList.remove('active'));
+  document.getElementById('flagged-tab').classList.add('active');
+  document.getElementById('main-title').textContent = 'Flagged';
+
+  const container = document.getElementById('items-container');
+  container.innerHTML = '<div style="color:var(--text-muted);padding:20px">Loading&#8230;</div>';
+
+  // Fetch all three sections
+  const [screensRes, componentsRes, flowsRes] = await Promise.all([
+    fetch('/api/screens'),
+    fetch('/api/components'),
+    fetch('/api/flows'),
+  ]);
+  const [screens, components, flows] = await Promise.all([
+    screensRes.json(), componentsRes.json(), flowsRes.json(),
+  ]);
+
+  // Collect flagged variants with their parent entity info
+  const flagged = [];
+  for (const s of screens) {
+    for (const v of (s.variants || [])) {
+      if (v.flag === 'needs-revision') flagged.push({ entityType: 'screen', entity: s, variant: v });
+    }
+  }
+  for (const c of components) {
+    for (const v of (c.variants || [])) {
+      if (v.flag === 'needs-revision') flagged.push({ entityType: 'component', entity: c, variant: v });
+    }
+  }
+  for (const f of flows) {
+    for (const v of (f.variants || [])) {
+      if (v.flag === 'needs-revision') flagged.push({ entityType: 'flow', entity: f, variant: v });
+    }
+  }
+
+  if (flagged.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <p>No flagged variants.</p>
+        <p style="font-size:12px;color:var(--text-muted)">Flag a variant with "needs revision" to surface it here.</p>
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = flagged.map(({ entityType, entity, variant }) => {
+    const reasonHtml = variant.flag_reason
+      ? `<div class="flagged-reason">${escHtml(variant.flag_reason)}</div>`
+      : '';
+    const previewBtn = `<button class="btn btn-ghost" onclick="previewFile('${escAttr(variant.file)}')">Preview</button>`;
+    const unflagBtn  = `<button class="btn btn-ghost" onclick="unflagVariantAndReload(${variant.id}, '${entityType}')">Unflag</button>`;
+    return `
+    <div class="card flagged-card">
+      <div class="card-header">
+        <span class="card-name">${escHtml(entity.name)}</span>
+        <span class="type-badge">${entityType}</span>
+        <span class="variant-flag-badge">needs revision</span>
+      </div>
+      <div style="padding:10px 16px">
+        <div style="font-size:12px;font-family:'SF Mono','Menlo',monospace;color:var(--text-secondary);margin-bottom:4px">${escHtml(variant.file)}${variant.label ? ' [' + escHtml(variant.label) + ']' : ''}</div>
+        ${reasonHtml}
+      </div>
+      <div class="card-footer">
+        ${previewBtn}
+        ${unflagBtn}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function unflagVariantAndReload(variantId, entityType) {
+  const res = await fetch(`/api/${_variantApiPrefix(entityType)}/${variantId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ flag: null, flag_reason: null }),
+  });
+  if (!res.ok) { alert('Failed to unflag'); return; }
+  showFlaggedTab();
 }
 
 // ---------------------------------------------------------------------------
@@ -459,11 +570,18 @@ async function deleteEntity(entityId) {
 // ---------------------------------------------------------------------------
 
 async function selectVariant(variantId, entityType) {
-  const prefix = entityType === 'screen'    ? 'screen-variants'
-               : entityType === 'component' ? 'component-variants'
-               : 'flow-variants';
+  const prefix = _variantApiPrefix(entityType);
   const res = await fetch(`/api/${prefix}/${variantId}/select`, { method: 'PUT' });
   if (!res.ok) { alert('Failed to select variant'); return; }
+
+  const rationale = prompt('Why did this variant win? (optional — press Enter to skip)', '');
+  if (rationale !== null && rationale.trim()) {
+    await fetch(`/api/${prefix}/${variantId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rationale: rationale.trim() }),
+    });
+  }
   loadSection();
 }
 
@@ -896,6 +1014,48 @@ async function editVariantRationale(variantId, entityType) {
   const next = prompt('Design rationale (why this variant):', current);
   if (next === null) return;
   await patchVariant(variantId, entityType, { rationale: next.trim() || null });
+}
+
+async function editEntityRationale(entityId) {
+  const allItems = state ? (state.items || []) : [];
+  const item = allItems.find(i => i.id === entityId);
+  const current = item ? (item.rationale || '') : '';
+  const next = prompt('Design rationale (why this direction):', current);
+  if (next === null) return;
+  const res = await fetch(`/api/${state.section}/${entityId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rationale: next.trim() || null }),
+  });
+  if (!res.ok) { alert('Failed to update rationale'); return; }
+  loadSection();
+}
+
+function openCompareModal(btn) {
+  const variants = JSON.parse(btn.dataset.variants);
+  const itemName = btn.dataset.name;
+
+  document.getElementById('modal-title').textContent = `Compare variants — ${itemName}`;
+
+  const cols = variants.map(v => {
+    const label = v.label ? ` [${escHtml(v.label)}]` : '';
+    const rationaleHtml = v.rationale
+      ? `<div class="compare-rationale">${escHtml(v.rationale)}</div>`
+      : '';
+    return `
+      <div class="compare-col">
+        <div class="compare-col-header">
+          <span class="compare-col-file" title="${escAttr(v.file)}">${escHtml(v.file)}${label}</span>
+          <button class="btn btn-ghost" onclick="window.open('/design/${encodeURIComponent(v.file)}','_blank')">↗</button>
+        </div>
+        ${rationaleHtml}
+        <iframe class="compare-iframe" src="/design/${encodeURIComponent(v.file)}" loading="lazy"></iframe>
+      </div>`;
+  }).join('');
+
+  document.getElementById('modal-body').innerHTML = `<div class="compare-grid">${cols}</div>`;
+  document.getElementById('modal-footer').innerHTML = `<button class="btn" onclick="closeModalDirect()">Close</button>`;
+  document.getElementById('modal-backdrop').classList.add('open');
 }
 
 async function markReview(entityId) {

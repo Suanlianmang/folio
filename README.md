@@ -20,7 +20,7 @@ Run once per project, from the project root:
 folio init
 ```
 
-Creates `.folio/` with the SQLite database, screenshots directory, and `system.md`. If a `design/` directory exists inside `.folio/`, any HTML files there are automatically seeded as screens.
+Creates `.folio/` with the SQLite database, screenshots directory, and `system.md`. If `.folio/design/` contains HTML files, they are automatically seeded as screens. Folio warns if a top-level `design/` directory exists to prevent path confusion.
 
 Add `.folio/` to your `.gitignore` — it contains local state, not source.
 
@@ -52,6 +52,13 @@ folio serve --port 8080      # custom port
 folio serve --stop           # stop the running server
 ```
 
+The dashboard now includes:
+- **Flagged queue** — sidebar "Flagged" tab lists all variants marked `needs-revision` across all entity types
+- **Compare mode** — items with 2+ variants show a "Compare ↗" button; opens side-by-side iframe view
+- **Entity rationale** — shown on every card, clickable to edit inline
+- **Screen components** — screen cards show which components are linked to them
+- **Select-variant prompt** — selecting a variant via the dashboard prompts for rationale immediately
+
 ### Screens
 
 ```sh
@@ -63,6 +70,11 @@ folio screens set-status --id 1 --status exploring|approved|finalised
 folio screens set-rationale --id 1 --rationale "Chose this layout for scan order"
 folio screens set-parent --id 2 --parent 1               # nest screen under another
 folio screens select-variant --variant-id 3              # mark variant as selected
+folio screens rename --id 1 --name "New Name"
+folio screens delete --id 1
+folio screens set-description --id 1 --description "..."
+folio screens remove-variant --variant-id 3
+folio screens move-variant --variant-id 3 --to-screen 2
 ```
 
 ### Components
@@ -91,6 +103,15 @@ folio flows unlink --id 1 --screen 2
 folio flows select-variant --variant-id 5
 ```
 
+### Logging
+
+One-line iteration notes attached to any entity. Feeds `folio suggest` automatically. Preferred over `screens change` for quick recording.
+
+```sh
+folio log --type screen --id 1 "removed thread strips — testing reading focus"
+folio log --type component --id 2 "tightened padding to 12px"
+```
+
 ### Variants
 
 Add a variant to any entity type:
@@ -101,7 +122,7 @@ folio add-variant --type component --id 1 --file "btn-rounded.html" --label "rou
 folio add-variant --type flow --id 1 --file "onboarding-short.html"
 ```
 
-Optional flags: `--label`, `--ui-description`, `--notes`.
+Optional flags: `--label`, `--ui-description`, `--notes`, `--rationale`. Accepts absolute paths — folio copies the file into `.folio/design/` automatically.
 
 ### Screenshots
 
