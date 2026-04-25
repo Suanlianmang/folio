@@ -416,12 +416,8 @@ def _cmd_tree(_args: argparse.Namespace) -> None:
     flows      = db.list_flows()
 
     print("=== PROJECT TREE ===")
-    print()
 
-    # Build id→screen map and parent map for hierarchy.
-    by_id: dict[int, dict] = {s["id"]: s for s in screens}
-
-    # Separate roots and children.
+    # ---- screens ----
     roots    = [s for s in screens if not s.get("parent_id")]
     by_parent: dict[int, list[dict]] = {}
     for s in screens:
@@ -429,41 +425,92 @@ def _cmd_tree(_args: argparse.Namespace) -> None:
         if pid:
             by_parent.setdefault(pid, []).append(s)
 
-    def _print_screen_tree_node(screen: dict, indent: int) -> None:
-        prefix = "  " * indent
-        selected_marker = "●" if screen.get("selected_file") else " "
-        file_str = f"  ● {screen['selected_file']}" if screen.get("selected_file") else ""
-        print(f"{prefix}#{screen['id']}  {screen['status']}  {screen['name']}{file_str}")
+    def _print_screen_node(screen: dict, indent: int) -> None:
+        prefix     = "  " * indent
+        sub        = "  " * (indent + 1)
+        variants   = screen.get("variants", [])
+        n_variants = len(variants)
+        n_flagged  = sum(1 for v in variants if v.get("flag"))
+        file_str   = f"  ● {screen['selected_file']}" if screen.get("selected_file") else ""
+        var_str    = ""
+        if n_variants:
+            var_str = f"  ({n_variants} variant{'s' if n_variants != 1 else ''}"
+            var_str += f", {n_flagged} flagged" if n_flagged else ""
+            var_str += ")"
+        print(f"{prefix}#{screen['id']}  [{screen['status']}]  {screen['name']}{file_str}{var_str}")
+        if screen.get("hypothesis"):
+            print(f"{sub}Hypothesis: {screen['hypothesis']}")
+        if screen.get("focus"):
+            print(f"{sub}Focus: {screen['focus']}")
+        if screen.get("needs_review"):
+            print(f"{sub}needs-review")
+        comps = screen.get("components", [])
+        if comps:
+            comp_str = ", ".join(f"{c['name']} (#{c['id']})" for c in comps)
+            print(f"{sub}Components: {comp_str}")
         for child in by_parent.get(screen["id"], []):
-            _print_screen_tree_node(child, indent + 1)
+            _print_screen_node(child, indent + 1)
 
+    print()
     print(f"SCREENS ({len(screens)})")
     if screens:
         for root in roots:
-            _print_screen_tree_node(root, 1)
+            _print_screen_node(root, 1)
     else:
         print("  (none)")
 
+    # ---- components ----
     print()
     print(f"COMPONENTS ({len(components)})")
     if components:
         for c in components:
-            selected_marker = "●" if c.get("selected_file") else " "
-            file_str = f"  ● {c['selected_file']}" if c.get("selected_file") else ""
-            print(f"  #{c['id']}  {c['status']}  {c['name']}{file_str}")
+            variants  = c.get("variants", [])
+            n_var     = len(variants)
+            n_flagged = sum(1 for v in variants if v.get("flag"))
+            file_str  = f"  ● {c['selected_file']}" if c.get("selected_file") else ""
+            var_str   = ""
+            if n_var:
+                var_str = f"  ({n_var} variant{'s' if n_var != 1 else ''}"
+                var_str += f", {n_flagged} flagged" if n_flagged else ""
+                var_str += ")"
+            print(f"  #{c['id']}  [{c['status']}]  {c['name']}{file_str}{var_str}")
+            if c.get("hypothesis"):
+                print(f"      Hypothesis: {c['hypothesis']}")
+            if c.get("focus"):
+                print(f"      Focus: {c['focus']}")
+            if c.get("needs_review"):
+                print(f"      needs-review")
+            used_in = c.get("used_in", [])
+            if used_in:
+                used_str = ", ".join(f"{s['name']} (#{s['id']})" for s in used_in)
+                print(f"      Used in: {used_str}")
     else:
         print("  (none)")
 
+    # ---- flows ----
     print()
     print(f"FLOWS ({len(flows)})")
     if flows:
         for f in flows:
-            file_str = f"  ● {f['selected_file']}" if f.get("selected_file") else ""
-            print(f"  #{f['id']}  {f['status']}  {f['name']}{file_str}")
-            linked_screens = f.get("screens", [])
-            if linked_screens:
-                names = ", ".join(s["name"] for s in linked_screens)
-                print(f"      Screens: {names}")
+            variants  = f.get("variants", [])
+            n_var     = len(variants)
+            n_flagged = sum(1 for v in variants if v.get("flag"))
+            file_str  = f"  ● {f['selected_file']}" if f.get("selected_file") else ""
+            var_str   = ""
+            if n_var:
+                var_str = f"  ({n_var} variant{'s' if n_var != 1 else ''}"
+                var_str += f", {n_flagged} flagged" if n_flagged else ""
+                var_str += ")"
+            print(f"  #{f['id']}  [{f['status']}]  {f['name']}{file_str}{var_str}")
+            if f.get("hypothesis"):
+                print(f"      Hypothesis: {f['hypothesis']}")
+            if f.get("focus"):
+                print(f"      Focus: {f['focus']}")
+            if f.get("needs_review"):
+                print(f"      needs-review")
+            linked = f.get("screens", [])
+            if linked:
+                print(f"      Screens: {' → '.join(s['name'] for s in linked)}")
     else:
         print("  (none)")
 
