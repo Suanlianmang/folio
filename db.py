@@ -103,6 +103,9 @@ CREATE TABLE IF NOT EXISTS screen_variants (
     ui_description TEXT,
     screenshot     TEXT,
     notes          TEXT,
+    rationale      TEXT,
+    flag           TEXT,
+    flag_reason    TEXT,
     created_at     TEXT DEFAULT (datetime('now'))
 );
 
@@ -114,6 +117,9 @@ CREATE TABLE IF NOT EXISTS component_variants (
     ui_description TEXT,
     screenshot     TEXT,
     notes          TEXT,
+    rationale      TEXT,
+    flag           TEXT,
+    flag_reason    TEXT,
     created_at     TEXT DEFAULT (datetime('now'))
 );
 
@@ -125,6 +131,9 @@ CREATE TABLE IF NOT EXISTS flow_variants (
     ui_description TEXT,
     screenshot     TEXT,
     notes          TEXT,
+    rationale      TEXT,
+    flag           TEXT,
+    flag_reason    TEXT,
     created_at     TEXT DEFAULT (datetime('now'))
 );
 
@@ -153,6 +162,7 @@ def init_db() -> None:
 
     conn = get_db()
     conn.executescript(_SCHEMA)
+    _migrate_variants(conn)
     conn.commit()
     conn.close()
 
@@ -167,11 +177,30 @@ def init_db() -> None:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+_VARIANT_TABLES = ("screen_variants", "component_variants", "flow_variants")
+_NEW_VARIANT_COLS = (
+    ("rationale",   "TEXT"),
+    ("flag",        "TEXT"),
+    ("flag_reason", "TEXT"),
+)
+
+
+def _migrate_variants(conn: sqlite3.Connection) -> None:
+    for table in _VARIANT_TABLES:
+        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        for col, decl in _NEW_VARIANT_COLS:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+
 _VALID_STATUSES = {"exploring", "approved", "finalised"}
 
 _VALID_SCREEN_FIELDS    = {"name", "description", "usage", "selected_file", "rationale", "status"}
 _VALID_COMPONENT_FIELDS = {"name", "description", "usage", "selected_file", "rationale", "status"}
 _VALID_FLOW_FIELDS      = {"name", "description", "usage", "selected_file", "rationale", "status"}
+
+_VALID_VARIANT_FIELDS = {"label", "ui_description", "notes", "rationale", "flag", "flag_reason"}
+_VALID_FLAGS = {None, "needs-revision"}
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
@@ -379,6 +408,7 @@ def create_screen_variant(
     label: str | None = None,
     ui_description: str | None = None,
     notes: str | None = None,
+    rationale: str | None = None,
 ) -> dict:
     """Insert a new variant for a screen. Returns the variant as a dict."""
     assert isinstance(screen_id, int), f"screen_id must be int: {screen_id!r}"
@@ -393,10 +423,10 @@ def create_screen_variant(
 
     cursor = conn.execute(
         """
-        INSERT INTO screen_variants (screen_id, file, label, ui_description, notes)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO screen_variants (screen_id, file, label, ui_description, notes, rationale)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (screen_id, file.strip(), label, ui_description, notes),
+        (screen_id, file.strip(), label, ui_description, notes, rationale),
     )
     variant_id = cursor.lastrowid
     assert variant_id is not None, "INSERT into screen_variants returned no rowid"
@@ -457,6 +487,22 @@ def delete_screen_variant(variant_id: int) -> bool:
     return deleted
 
 
+def update_variant_screenshot(variant_id: int, screenshot_path: str) -> bool:
+    """Update screenshot on any variant type. Tries all three tables."""
+    conn = get_db()
+    for table in ("screen_variants", "component_variants", "flow_variants"):
+        cursor = conn.execute(
+            f"UPDATE {table} SET screenshot = ? WHERE id = ?",
+            (screenshot_path, variant_id),
+        )
+        if cursor.rowcount > 0:
+            conn.commit()
+            conn.close()
+            return True
+    conn.close()
+    return False
+
+
 def update_screen_variant_screenshot(variant_id: int, screenshot_path: str) -> bool:
     conn = get_db()
     cursor = conn.execute(
@@ -466,6 +512,81 @@ def update_screen_variant_screenshot(variant_id: int, screenshot_path: str) -> b
     conn.commit()
     conn.close()
     return cursor.rowcount > 0
+
+
+def update_screen_variant(variant_id: int, **fields) -> dict | None:
+    """Update allowed fields on a screen variant. Returns updated variant or None if not found."""
+    assert isinstance(variant_id, int) and variant_id > 0
+    assert fields, "at least one field required"
+    unknown = set(fields) - _VALID_VARIANT_FIELDS
+    assert not unknown, f"unknown variant fields: {unknown}"
+    if "flag" in fields:
+        assert fields["flag"] in _VALID_FLAGS, f"invalid flag: {fields['flag']!r}"
+
+    assignments = ", ".join(f"{c} = ?" for c in fields)
+    values = list(fields.values()) + [variant_id]
+
+    conn = get_db()
+    cursor = conn.execute(
+        f"UPDATE screen_variants SET {assignments} WHERE id = ?", values,
+    )
+    if cursor.rowcount == 0:
+        conn.close()
+        return None
+    conn.commit()
+    row = conn.execute("SELECT * FROM screen_variants WHERE id = ?", (variant_id,)).fetchone()
+    conn.close()
+    return _row_to_dict(row)
+
+
+def update_component_variant(variant_id: int, **fields) -> dict | None:
+    """Update allowed fields on a component variant. Returns updated variant or None if not found."""
+    assert isinstance(variant_id, int) and variant_id > 0
+    assert fields, "at least one field required"
+    unknown = set(fields) - _VALID_VARIANT_FIELDS
+    assert not unknown, f"unknown variant fields: {unknown}"
+    if "flag" in fields:
+        assert fields["flag"] in _VALID_FLAGS, f"invalid flag: {fields['flag']!r}"
+
+    assignments = ", ".join(f"{c} = ?" for c in fields)
+    values = list(fields.values()) + [variant_id]
+
+    conn = get_db()
+    cursor = conn.execute(
+        f"UPDATE component_variants SET {assignments} WHERE id = ?", values,
+    )
+    if cursor.rowcount == 0:
+        conn.close()
+        return None
+    conn.commit()
+    row = conn.execute("SELECT * FROM component_variants WHERE id = ?", (variant_id,)).fetchone()
+    conn.close()
+    return _row_to_dict(row)
+
+
+def update_flow_variant(variant_id: int, **fields) -> dict | None:
+    """Update allowed fields on a flow variant. Returns updated variant or None if not found."""
+    assert isinstance(variant_id, int) and variant_id > 0
+    assert fields, "at least one field required"
+    unknown = set(fields) - _VALID_VARIANT_FIELDS
+    assert not unknown, f"unknown variant fields: {unknown}"
+    if "flag" in fields:
+        assert fields["flag"] in _VALID_FLAGS, f"invalid flag: {fields['flag']!r}"
+
+    assignments = ", ".join(f"{c} = ?" for c in fields)
+    values = list(fields.values()) + [variant_id]
+
+    conn = get_db()
+    cursor = conn.execute(
+        f"UPDATE flow_variants SET {assignments} WHERE id = ?", values,
+    )
+    if cursor.rowcount == 0:
+        conn.close()
+        return None
+    conn.commit()
+    row = conn.execute("SELECT * FROM flow_variants WHERE id = ?", (variant_id,)).fetchone()
+    conn.close()
+    return _row_to_dict(row)
 
 
 def get_screen_tree() -> list[dict]:
@@ -606,6 +727,7 @@ def create_component_variant(
     label: str | None = None,
     ui_description: str | None = None,
     notes: str | None = None,
+    rationale: str | None = None,
 ) -> dict:
     """Insert a new variant for a component. Returns the variant as a dict."""
     assert isinstance(component_id, int), f"component_id must be int: {component_id!r}"
@@ -622,10 +744,10 @@ def create_component_variant(
 
     cursor = conn.execute(
         """
-        INSERT INTO component_variants (component_id, file, label, ui_description, notes)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO component_variants (component_id, file, label, ui_description, notes, rationale)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (component_id, file.strip(), label, ui_description, notes),
+        (component_id, file.strip(), label, ui_description, notes, rationale),
     )
     variant_id = cursor.lastrowid
     assert variant_id is not None, "INSERT into component_variants returned no rowid"
@@ -841,6 +963,7 @@ def create_flow_variant(
     label: str | None = None,
     ui_description: str | None = None,
     notes: str | None = None,
+    rationale: str | None = None,
 ) -> dict:
     """Insert a new variant for a flow. Returns the variant as a dict."""
     assert isinstance(flow_id, int), f"flow_id must be int: {flow_id!r}"
@@ -855,10 +978,10 @@ def create_flow_variant(
 
     cursor = conn.execute(
         """
-        INSERT INTO flow_variants (flow_id, file, label, ui_description, notes)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO flow_variants (flow_id, file, label, ui_description, notes, rationale)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (flow_id, file.strip(), label, ui_description, notes),
+        (flow_id, file.strip(), label, ui_description, notes, rationale),
     )
     variant_id = cursor.lastrowid
     assert variant_id is not None, "INSERT into flow_variants returned no rowid"

@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 const state = {
-  section: 'screens',  // 'screens' | 'components' | 'flows'
+  section: 'flows',  // 'screens' | 'components' | 'flows'
   items: [],
   treeFlowId: null,
 };
@@ -314,16 +314,33 @@ function renderVariants(item, entityType) {
       ? ''
       : `<button class="btn btn-ghost" onclick="selectVariant(${v.id}, '${entityType}')">Select</button>`;
 
+    const flagBadge = v.flag === 'needs-revision'
+      ? `<span class="variant-flag-badge" title="${escAttr(v.flag_reason || '')}">needs revision</span>`
+      : '';
+
+    const rationaleHtml = v.rationale
+      ? `<div class="variant-rationale" onclick="editVariantRationale(${v.id}, '${entityType}')">${escHtml(v.rationale)}</div>`
+      : `<div class="variant-rationale is-empty" onclick="editVariantRationale(${v.id}, '${entityType}')">+ rationale</div>`;
+
+    const flagBtn = v.flag === 'needs-revision'
+      ? `<button class="btn btn-ghost" onclick="unflagVariant(${v.id}, '${entityType}')">Unflag</button>`
+      : `<button class="btn btn-ghost" onclick="flagVariant(${v.id}, '${entityType}')">Flag</button>`;
+
     return `
     <div class="variant-row" id="variant-row-${v.id}">
-      <span class="${dotClass}">${dotChar}</span>
-      <span class="variant-file" title="${escAttr(v.file)}">${escHtml(v.file)}</span>
-      <span class="variant-label">${label}</span>
-      <div class="variant-actions">
-        <button class="btn btn-ghost" onclick="previewFile('${escAttr(v.file)}')">Preview</button>
-        ${selectBtn}
-        <button class="btn-danger btn" onclick="deleteVariant(${v.id}, '${entityType}')" title="Delete variant">&#x2715;</button>
+      <div class="variant-row-main">
+        <span class="${dotClass}">${dotChar}</span>
+        <span class="variant-file" title="${escAttr(v.file)}">${escHtml(v.file)}</span>
+        <span class="variant-label">${label}</span>
+        ${flagBadge}
+        <div class="variant-actions">
+          <button class="btn btn-ghost" onclick="previewFile('${escAttr(v.file)}')">Preview</button>
+          ${selectBtn}
+          ${flagBtn}
+          <button class="btn-danger btn" onclick="deleteVariant(${v.id}, '${entityType}')" title="Delete variant">&#x2715;</button>
+        </div>
       </div>
+      ${rationaleHtml}
     </div>`;
   }).join('');
 
@@ -512,6 +529,10 @@ function openAddVariantModal(entityId) {
     <div class="form-field">
       <label class="form-label">Notes</label>
       <textarea class="form-textarea" id="f-vnotes" placeholder="Implementation notes, concerns, etc."></textarea>
+    </div>
+    <div class="form-field">
+      <label class="form-label">Rationale</label>
+      <textarea class="form-textarea" id="f-vrationale" placeholder="What hypothesis is this testing?"></textarea>
     </div>`;
 
   document.getElementById('modal-footer').innerHTML = `
@@ -527,13 +548,14 @@ async function submitNewVariant(entityId) {
   const label          = document.getElementById('f-vlabel').value.trim() || null;
   const ui_description = document.getElementById('f-vuidesc').value.trim() || null;
   const notes          = document.getElementById('f-vnotes').value.trim() || null;
+  const rationale      = document.getElementById('f-vrationale').value.trim() || null;
 
   if (!file) { alert('File is required'); return; }
 
   const res = await fetch(`/api/${state.section}/${entityId}/variants`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ file, label, ui_description, notes }),
+    body:    JSON.stringify({ file, label, ui_description, notes, rationale }),
   });
 
   if (!res.ok) {
@@ -672,7 +694,8 @@ function openFlowTree(flowId, flowName, screens) {
       const x1 = pos[s.parent_id].x + NW / 2, y1 = pos[s.parent_id].y + NH;
       const x2 = pos[s.id].x + NW / 2,        y2 = pos[s.id].y;
       const my = (y1 + y2) / 2;
-      arrows += `<path d="M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2 - 7}" fill="none" stroke="#3a4458" stroke-width="1.5" marker-end="url(#arr)"/>`;
+      arrows += `<path d="M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2 - 7}" fill="none" stroke="#3a4458" stroke-width="1.5"/>`;
+      arrows += `<polygon points="${x2},${y2} ${x2 - 5},${y2 - 8} ${x2 + 5},${y2 - 8}" fill="#3a4458"/>`;
     }
   }
 
@@ -718,11 +741,6 @@ function openFlowTree(flowId, flowName, screens) {
     <div class="flow-tree-view" id="ftv">
       <div class="flow-tree-canvas" id="ftc" style="width:${canvasW}px;height:${canvasH}px">
         <svg class="flow-tree-svg" id="fts" width="${canvasW}" height="${canvasH}">
-          <defs>
-            <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto-start-reverse">
-              <polygon points="0 0,10 3.5,0 7" fill="#3a4458"/>
-            </marker>
-          </defs>
           ${arrows}
         </svg>
         ${nodes}
@@ -771,6 +789,53 @@ function resetZoom() {
 function closeFlowTree() {
   state.treeFlowId = null;
   loadSection();
+}
+
+// ---------------------------------------------------------------------------
+// Variant patch actions
+// ---------------------------------------------------------------------------
+
+function _variantApiPrefix(entityType) {
+  return entityType === 'screen'    ? 'screen-variants'
+       : entityType === 'component' ? 'component-variants'
+       : 'flow-variants';
+}
+
+async function patchVariant(variantId, entityType, body) {
+  const res = await fetch(`/api/${_variantApiPrefix(entityType)}/${variantId}`, {
+    method:  'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    alert(data.error || 'Failed to update variant');
+    return false;
+  }
+  loadSection();
+  return true;
+}
+
+async function flagVariant(variantId, entityType) {
+  const reason = prompt('Reason for flagging (optional):', '');
+  if (reason === null) return;
+  await patchVariant(variantId, entityType, { flag: 'needs-revision', flag_reason: reason.trim() || null });
+}
+
+async function unflagVariant(variantId, entityType) {
+  await patchVariant(variantId, entityType, { flag: null, flag_reason: null });
+}
+
+async function editVariantRationale(variantId, entityType) {
+  const allItems = state ? (state.items || []) : [];
+  let current = '';
+  for (const item of allItems) {
+    const match = (item.variants || []).find(v => v.id === variantId);
+    if (match) { current = match.rationale || ''; break; }
+  }
+  const next = prompt('Design rationale (why this variant):', current);
+  if (next === null) return;
+  await patchVariant(variantId, entityType, { rationale: next.trim() || null });
 }
 
 function escHtml(str) {

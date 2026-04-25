@@ -16,9 +16,9 @@
     <div class="sidebar-project" id="project-name">Folio</div>
 
     <div class="sidebar-label">Browse</div>
-    <button class="sidebar-tab active" onclick="setSection('screens', this)">Screens</button>
+    <button class="sidebar-tab active" onclick="setSection('flows', this)">Flows</button>
+    <button class="sidebar-tab" onclick="setSection('screens', this)">Screens</button>
     <button class="sidebar-tab" onclick="setSection('components', this)">Components</button>
-    <button class="sidebar-tab" onclick="setSection('flows', this)">Flows</button>
 
     <div style="margin-top: 20px;">
       <div class="sidebar-label">Tools</div>
@@ -29,8 +29,8 @@
   <!-- Main -->
   <main class="main">
     <div class="main-header">
-      <span class="main-title" id="main-title">Screens</span>
-      <button class="btn btn-primary" id="new-item-btn" onclick="openNewItemModal()">+ New screen</button>
+      <span class="main-title" id="main-title">Flows</span>
+      <button class="btn btn-primary" id="new-item-btn" onclick="openNewItemModal()">+ New flow</button>
     </div>
     <div id="items-container"></div>
   </main>

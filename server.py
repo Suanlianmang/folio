@@ -335,6 +335,7 @@ class FolioHandler(BaseHTTPRequestHandler):
                 label=data.get("label"),
                 ui_description=data.get("ui_description"),
                 notes=data.get("notes"),
+                rationale=data.get("rationale"),
             )
         except (ValueError, AssertionError) as exc:
             self._send_json({"error": str(exc)}, 400)
@@ -351,6 +352,7 @@ class FolioHandler(BaseHTTPRequestHandler):
                 label=data.get("label"),
                 ui_description=data.get("ui_description"),
                 notes=data.get("notes"),
+                rationale=data.get("rationale"),
             )
         except (ValueError, AssertionError) as exc:
             self._send_json({"error": str(exc)}, 400)
@@ -367,6 +369,7 @@ class FolioHandler(BaseHTTPRequestHandler):
                 label=data.get("label"),
                 ui_description=data.get("ui_description"),
                 notes=data.get("notes"),
+                rationale=data.get("rationale"),
             )
         except (ValueError, AssertionError) as exc:
             self._send_json({"error": str(exc)}, 400)
@@ -464,7 +467,43 @@ class FolioHandler(BaseHTTPRequestHandler):
             self._handle_update_entity(int(match.group(1)), db.update_flow)
             return
 
+        match = _RE_SCREEN_VAR.match(path)
+        if match:
+            self._handle_update_variant(int(match.group(1)), db.update_screen_variant)
+            return
+
+        match = _RE_COMPONENT_VAR.match(path)
+        if match:
+            self._handle_update_variant(int(match.group(1)), db.update_component_variant)
+            return
+
+        match = _RE_FLOW_VAR.match(path)
+        if match:
+            self._handle_update_variant(int(match.group(1)), db.update_flow_variant)
+            return
+
         self._not_found()
+
+    def _handle_update_variant(self, variant_id: int, update_fn) -> None:
+        assert variant_id > 0
+        data = self._read_json()
+        if not data:
+            self._send_json({"error": "No fields provided"}, 400)
+            return
+        allowed = {"label", "ui_description", "notes", "rationale", "flag", "flag_reason"}
+        clean = {k: v for k, v in data.items() if k in allowed}
+        if not clean:
+            self._send_json({"error": "No allowed fields"}, 400)
+            return
+        try:
+            result = update_fn(variant_id, **clean)
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        if result is None:
+            self._send_json({"error": f"Variant {variant_id} not found"}, 404)
+            return
+        self._send_json(result)
 
     def _handle_update_entity(self, entity_id: int, update_fn) -> None:
         assert entity_id > 0, "entity_id must be positive"

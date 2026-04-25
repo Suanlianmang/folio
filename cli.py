@@ -70,6 +70,11 @@ def _print_screen_detail(screen: dict) -> None:
                 print(f"          {v['ui_description']}")
             if v.get("notes"):
                 print(f"          Notes: {v['notes']}")
+            if v.get("rationale"):
+                print(f"          Rationale: {v['rationale']}")
+            if v.get("flag"):
+                reason = f" — {v['flag_reason']}" if v.get("flag_reason") else ""
+                print(f"          Flag: {v['flag']}{reason}")
     else:
         print("  Variants: (none)")
 
@@ -121,6 +126,11 @@ def _print_component_detail(component: dict) -> None:
                 print(f"          {v['ui_description']}")
             if v.get("notes"):
                 print(f"          Notes: {v['notes']}")
+            if v.get("rationale"):
+                print(f"          Rationale: {v['rationale']}")
+            if v.get("flag"):
+                reason = f" — {v['flag_reason']}" if v.get("flag_reason") else ""
+                print(f"          Flag: {v['flag']}{reason}")
     else:
         print("  Variants: (none)")
 
@@ -172,6 +182,11 @@ def _print_flow_detail(flow: dict) -> None:
                 print(f"          {v['ui_description']}")
             if v.get("notes"):
                 print(f"          Notes: {v['notes']}")
+            if v.get("rationale"):
+                print(f"          Rationale: {v['rationale']}")
+            if v.get("flag"):
+                reason = f" — {v['flag_reason']}" if v.get("flag_reason") else ""
+                print(f"          Flag: {v['flag']}{reason}")
     else:
         print("  Variants: (none)")
 
@@ -329,23 +344,24 @@ def _cmd_add_variant(args: argparse.Namespace) -> None:
     label           = getattr(args, "label", None)
     ui_description  = getattr(args, "ui_description", None)
     notes           = getattr(args, "notes", None)
+    rationale       = getattr(args, "rationale", None)
 
     assert item_type in {"screen", "component", "flow"}, f"Unknown type: {item_type!r}"
 
     if item_type == "screen":
         variant = db.create_screen_variant(
             screen_id=item_id, file=file,
-            label=label, ui_description=ui_description, notes=notes,
+            label=label, ui_description=ui_description, notes=notes, rationale=rationale,
         )
     elif item_type == "component":
         variant = db.create_component_variant(
             component_id=item_id, file=file,
-            label=label, ui_description=ui_description, notes=notes,
+            label=label, ui_description=ui_description, notes=notes, rationale=rationale,
         )
     else:
         variant = db.create_flow_variant(
             flow_id=item_id, file=file,
-            label=label, ui_description=ui_description, notes=notes,
+            label=label, ui_description=ui_description, notes=notes, rationale=rationale,
         )
 
     print(f"Created {item_type} variant #{variant['id']}: {variant['file']}")
@@ -415,6 +431,29 @@ def _dispatch_screens(args: argparse.Namespace) -> None:
             print(f"Error: Screen variant {args.variant_id} not found.")
             sys.exit(1)
         print(f"Selected variant {args.variant_id} on screen #{screen['id']}: {screen['selected_file']}")
+
+    elif command == "set-variant-rationale":
+        v = db.update_screen_variant(args.variant_id, rationale=args.rationale)
+        if v is None:
+            print(f"Error: Screen variant {args.variant_id} not found.")
+            sys.exit(1)
+        print(f"Screen variant #{v['id']} rationale updated.")
+
+    elif command == "flag-variant":
+        v = db.update_screen_variant(
+            args.variant_id, flag="needs-revision", flag_reason=getattr(args, "reason", None),
+        )
+        if v is None:
+            print(f"Error: Screen variant {args.variant_id} not found.")
+            sys.exit(1)
+        print(f"Screen variant #{v['id']} flagged: needs-revision")
+
+    elif command == "unflag-variant":
+        v = db.update_screen_variant(args.variant_id, flag=None, flag_reason=None)
+        if v is None:
+            print(f"Error: Screen variant {args.variant_id} not found.")
+            sys.exit(1)
+        print(f"Screen variant #{v['id']} unflagged.")
 
     else:
         print(f"Error: Unknown screens command: {command!r}")
@@ -492,6 +531,29 @@ def _dispatch_components(args: argparse.Namespace) -> None:
             f"#{component['id']}: {component['selected_file']}"
         )
 
+    elif command == "set-variant-rationale":
+        v = db.update_component_variant(args.variant_id, rationale=args.rationale)
+        if v is None:
+            print(f"Error: Component variant {args.variant_id} not found.")
+            sys.exit(1)
+        print(f"Component variant #{v['id']} rationale updated.")
+
+    elif command == "flag-variant":
+        v = db.update_component_variant(
+            args.variant_id, flag="needs-revision", flag_reason=getattr(args, "reason", None),
+        )
+        if v is None:
+            print(f"Error: Component variant {args.variant_id} not found.")
+            sys.exit(1)
+        print(f"Component variant #{v['id']} flagged: needs-revision")
+
+    elif command == "unflag-variant":
+        v = db.update_component_variant(args.variant_id, flag=None, flag_reason=None)
+        if v is None:
+            print(f"Error: Component variant {args.variant_id} not found.")
+            sys.exit(1)
+        print(f"Component variant #{v['id']} unflagged.")
+
     else:
         print(f"Error: Unknown components command: {command!r}")
         sys.exit(1)
@@ -566,6 +628,29 @@ def _dispatch_flows(args: argparse.Namespace) -> None:
             f"#{flow['id']}: {flow['selected_file']}"
         )
 
+    elif command == "set-variant-rationale":
+        v = db.update_flow_variant(args.variant_id, rationale=args.rationale)
+        if v is None:
+            print(f"Error: Flow variant {args.variant_id} not found.")
+            sys.exit(1)
+        print(f"Flow variant #{v['id']} rationale updated.")
+
+    elif command == "flag-variant":
+        v = db.update_flow_variant(
+            args.variant_id, flag="needs-revision", flag_reason=getattr(args, "reason", None),
+        )
+        if v is None:
+            print(f"Error: Flow variant {args.variant_id} not found.")
+            sys.exit(1)
+        print(f"Flow variant #{v['id']} flagged: needs-revision")
+
+    elif command == "unflag-variant":
+        v = db.update_flow_variant(args.variant_id, flag=None, flag_reason=None)
+        if v is None:
+            print(f"Error: Flow variant {args.variant_id} not found.")
+            sys.exit(1)
+        print(f"Flow variant #{v['id']} unflagged.")
+
     else:
         print(f"Error: Unknown flows command: {command!r}")
         sys.exit(1)
@@ -633,6 +718,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p = screens_sub.add_parser("select-variant", help="Set variant as selected on parent screen")
     p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
 
+    p = screens_sub.add_parser("set-variant-rationale", help="Set rationale on a screen variant")
+    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+    p.add_argument("--rationale", required=True)
+
+    p = screens_sub.add_parser("flag-variant", help="Flag a screen variant as needs-revision")
+    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+    p.add_argument("--reason", default=None)
+
+    p = screens_sub.add_parser("unflag-variant", help="Clear flag on a screen variant")
+    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+
     # --- components ---
     p_components  = sub.add_parser("components", help="Component commands")
     components_sub = p_components.add_subparsers(dest="command", required=True)
@@ -665,6 +761,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--screen", type=int, required=True, help="Screen ID")
 
     p = components_sub.add_parser("select-variant", help="Set variant as selected on parent component")
+    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+
+    p = components_sub.add_parser("set-variant-rationale", help="Set rationale on a component variant")
+    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+    p.add_argument("--rationale", required=True)
+
+    p = components_sub.add_parser("flag-variant", help="Flag a component variant as needs-revision")
+    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+    p.add_argument("--reason", default=None)
+
+    p = components_sub.add_parser("unflag-variant", help="Clear flag on a component variant")
     p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
 
     # --- flows ---
@@ -701,6 +808,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p = flows_sub.add_parser("select-variant", help="Set variant as selected on parent flow")
     p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
 
+    p = flows_sub.add_parser("set-variant-rationale", help="Set rationale on a flow variant")
+    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+    p.add_argument("--rationale", required=True)
+
+    p = flows_sub.add_parser("flag-variant", help="Flag a flow variant as needs-revision")
+    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+    p.add_argument("--reason", default=None)
+
+    p = flows_sub.add_parser("unflag-variant", help="Clear flag on a flow variant")
+    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+
     # --- top-level flat commands ---
     sub.add_parser("init", help="Init DB, copy system.md, seed from design/")
     sub.add_parser("sync-system", help="Write decisions table to system.md")
@@ -717,6 +835,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_av.add_argument("--label")
     p_av.add_argument("--ui-description", dest="ui_description")
     p_av.add_argument("--notes")
+    p_av.add_argument("--rationale", default=None)
 
     p_sc = sub.add_parser("screenshot", help="Screenshot the selected file for an item")
     p_sc.add_argument("--type", required=True, choices=["screen", "component", "flow"])
