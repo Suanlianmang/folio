@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS deltas (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_type TEXT NOT NULL CHECK(entity_type IN ('screen','component','flow')),
     entity_id   INTEGER NOT NULL,
+    variant_id  INTEGER,
     type        TEXT NOT NULL,
     target      TEXT,
     from_val    TEXT,
@@ -177,6 +178,7 @@ def init_db() -> None:
     conn.executescript(_SCHEMA)
     _migrate_variants(conn)
     _migrate_entities(conn)
+    _migrate_deltas(conn)
     conn.commit()
     conn.close()
 
@@ -221,6 +223,18 @@ def _migrate_entities(conn: sqlite3.Connection) -> None:
         for col, decl in _NEW_ENTITY_COLS:
             if col not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+
+_NEW_DELTA_COLS = (
+    ("variant_id", "INTEGER"),
+)
+
+
+def _migrate_deltas(conn: sqlite3.Connection) -> None:
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(deltas)").fetchall()}
+    for col, decl in _NEW_DELTA_COLS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE deltas ADD COLUMN {col} {decl}")
 
 
 _VALID_STATUSES = {"exploring", "approved", "finalised"}
@@ -1175,20 +1189,23 @@ def add_delta(
     from_val: str | None = None,
     to_val: str | None = None,
     reason: str | None = None,
+    variant_id: int | None = None,
 ) -> dict:
     """Insert a new delta and return it as a dict."""
     assert entity_type in _VALID_ENTITY_TYPES, f"Invalid entity_type: {entity_type!r}"
     assert isinstance(entity_id, int), f"entity_id must be int: {entity_id!r}"
     assert entity_id > 0, f"entity_id must be positive: {entity_id}"
     assert type in _VALID_DELTA_TYPES, f"Invalid delta type: {type!r}"
+    assert variant_id is None or (isinstance(variant_id, int) and variant_id > 0), \
+        f"variant_id must be positive int or None: {variant_id!r}"
 
     conn = get_db()
     cursor = conn.execute(
         """
-        INSERT INTO deltas (entity_type, entity_id, type, target, from_val, to_val, reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO deltas (entity_type, entity_id, variant_id, type, target, from_val, to_val, reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (entity_type, entity_id, type, target, from_val, to_val, reason),
+        (entity_type, entity_id, variant_id, type, target, from_val, to_val, reason),
     )
     delta_id = cursor.lastrowid
     assert delta_id is not None, "INSERT into deltas returned no rowid"

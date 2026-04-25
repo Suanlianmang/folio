@@ -79,6 +79,30 @@ _RE_SCREEN_DELTAS    = re.compile(r"^/api/screens/(\d+)/deltas$")
 _RE_COMPONENT_DELTAS = re.compile(r"^/api/components/(\d+)/deltas$")
 _RE_FLOW_DELTAS      = re.compile(r"^/api/flows/(\d+)/deltas$")
 
+_RE_FOLIO_COMPONENT = re.compile(
+    r'<link\s[^>]*rel=["\']folio-component["\'][^>]*>',
+    re.IGNORECASE,
+)
+_RE_FOLIO_HREF = re.compile(r'href=["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+def _resolve_components(html: str, design_dir: Path, depth: int = 0) -> str:
+    if depth > 10:
+        return html
+    def _replace(m):
+        tag = m.group(0)
+        href_m = _RE_FOLIO_HREF.search(tag)
+        if not href_m:
+            return tag
+        filename = href_m.group(1)
+        component_path = design_dir / filename
+        if not component_path.exists():
+            print(f"Warning: folio-component not found: {filename}", file=sys.stderr)
+            return f'<!-- folio-component not found: {filename} -->'
+        content = component_path.read_text(encoding='utf-8')
+        return _resolve_components(content, design_dir, depth + 1)
+    return _RE_FOLIO_COMPONENT.sub(_replace, html)
+
 
 class FolioHandler(BaseHTTPRequestHandler):
 
@@ -123,6 +147,17 @@ class FolioHandler(BaseHTTPRequestHandler):
             mime = "application/octet-stream"
         body = path.read_bytes()
         self._send_response_bytes(body, mime, 200)
+
+    def _serve_design_file(self, path: Path) -> None:
+        if not path.exists():
+            self._not_found()
+            return
+        if path.suffix.lower() != '.html':
+            self._serve_static(path)
+            return
+        html = path.read_text(encoding='utf-8')
+        html = _resolve_components(html, db.DESIGN_DIR)
+        self._send_html(html)
 
     def _serve_dashboard(self) -> None:
         html = (_UI_DIR / "dashboard.html").read_text(encoding="utf-8")
@@ -174,7 +209,7 @@ class FolioHandler(BaseHTTPRequestHandler):
 
         match = _RE_DESIGN.match(path)
         if match:
-            self._serve_static(db.DESIGN_DIR / unquote(match.group(1)))
+            self._serve_design_file(db.DESIGN_DIR / unquote(match.group(1)))
             return
 
         match = _RE_SCREENSHOTS.match(path)

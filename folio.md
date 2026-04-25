@@ -188,7 +188,8 @@ This outputs: current state, what's been tried, open questions (changes with no 
 **Approving** — user selects a variant:
 
 ```bash
-folio screens select-variant --variant-id N
+folio screens select-variant --variant-id N        # by ID
+folio screens select-variant --id N --file "f.html"  # by filename (when ID unknown)
 folio screens set-rationale --id N --rationale "why this variant won"
 folio screens set-status --id N --status approved
 folio sync-system
@@ -260,6 +261,7 @@ folio screens rename --id N --name "..."
 folio screens delete --id N
 folio screens set-description --id N --description "..."
 folio screens select-variant --variant-id N
+folio screens select-variant --id N --file "filename.html"  # alternative: by filename
 folio screens remove-variant --variant-id N
 folio screens move-variant --variant-id N --to-screen N
 folio screens set-hypothesis --id N --hypothesis "..."
@@ -281,6 +283,7 @@ folio components set-rationale --id N --rationale "..."
 folio components link --id N --screen N
 folio components unlink --id N --screen N
 folio components select-variant --variant-id N
+folio components select-variant --id N --file "filename.html"
 folio components set-hypothesis --id N --hypothesis "..."
 folio components set-focus --id N --area "..."
 folio components needs-review --id N
@@ -297,6 +300,7 @@ folio flows set-rationale --id N --rationale "..."
 folio flows link --id N --screen N
 folio flows unlink --id N --screen N
 folio flows select-variant --variant-id N
+folio flows select-variant --id N --file "filename.html"
 folio flows set-hypothesis --id N --hypothesis "..."
 folio flows set-focus --id N --area "..."
 folio flows needs-review --id N
@@ -306,6 +310,7 @@ folio flows record-outcome --delta-id N --outcome "..."
 
 # Logging (lightweight, preferred over screens change)
 folio log --type screen|component|flow --id N "what changed and why"
+folio log --type screen|component|flow --id N --variant-id N "what changed and why"  # scoped to a specific variant
 
 # Shared
 folio add-variant --type screen|component|flow --id N --file "file.html" [--label "..."] [--rationale "..."]
@@ -327,7 +332,7 @@ Every design pass follows this exact sequence — no shortcuts:
 folio context        → read current state
 [write / edit HTML]
 folio screenshot     → see actual output
-folio log            → record what changed and why (one line)
+folio log            → record what changed and why (add --variant-id N to scope to a variant)
 [user gives feedback]
 folio record-outcome → capture the result (only if using screens change)
 ```
@@ -349,6 +354,20 @@ Dashboard features:
 - **Compare ↗** button on any item with 2+ variants — side-by-side iframe view
 - Entity rationale shown on card, clickable to edit
 - Screen cards show which components are linked to them
+
+---
+
+## Component reuse (server-side include)
+
+Screen variants can reference shared components instead of copy-pasting HTML/CSS/JS. Add to any screen HTML file:
+
+```html
+<link rel="folio-component" href="compose.html">
+```
+
+The folio server inlines the referenced file at serve time — works in the preview drawer, compare modal, and `folio screenshot`. Components can reference other components (up to 10 levels deep). If the file is not found, an HTML comment is injected and a warning printed to the server log.
+
+When writing new screen variants, always check if approved components exist (`folio components list`) — reference them via `<link rel="folio-component">` instead of reimplementing.
 
 ---
 

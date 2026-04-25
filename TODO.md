@@ -1,39 +1,23 @@
-# Folio — Todo
+# Folio TODO
 
-## Tier 1 — Core primitives
+## Pending fixes (from session 2 feedback)
 
-- [x] **Structured deltas** (`folio screens change`)
-  - Schema: `type`, `target`, `from`, `to`, `reason`, `outcome`
-  - Add to `db.py`, `cli.py`
-  - Include in `folio context` output
+### Broken behavior
+- [x] `add-variant --file /absolute/path` stores path verbatim → 404. Fixed: copies to `.folio/design/`, stores filename only.
+- [x] `folio init` seeds only from `.folio/design/`, warns about top-level `design/`.
+- [x] Warning emitted when variant file missing from `.folio/design/` at `add-variant` time.
 
-- [x] **Working hypothesis** (`folio screens set-hypothesis`)
-  - Field per screen/component/flow
-  - Shown in `folio context` output
+### CLI gaps
+- [x] `select-variant --file <filename>` — add `--id` + `--file` as alternative to `--variant-id` (all three entity types).
+- [x] `folio log --variant-id N` — logs now attach to a specific variant. `deltas` table gains `variant_id` column (migration included).
 
-- [x] **`folio context --screen N`** (prompt builder)
-  - Outputs: current variant + last 5 deltas + hypothesis + focus area
-  - Replaces reading system.md + show + screenshot separately
-  - Add to `folio.md` as mandatory pre-iteration step
+### Dashboard gaps
+- [x] Rationale renders in dashboard cards (`entityRationaleHtml` wired in all three card renderers).
+- [x] Compare modal (`Compare ↗` button + `openCompareModal`) implemented in `dashboard.js`.
+- [x] Screen components shown on screen cards via `screenComponentsHtml`.
 
-- [x] **Attention focus** (`folio focus --screen N --area "header CTA"`)
-  - Stored per entity, included in `folio context`
-  - Prevents Claude over-editing unrelated areas + regressions
+---
 
-## Tier 2 — High value
+## Component Reuse (server-side include) ✓
 
-- [x] **`folio tree`** — dense text tree for LLM orientation on session start
-- [x] **`needs_review` status** — formal human handoff, dashboard highlights it
-- [x] **Regression awareness** — query deltas before change: "has this been tried?"
-- [x] **`folio explain --screen N`** — Claude generates: what changed, what we're trying, what's unclear. Human re-orientation doc.
-
-## Tier 3 — Lower priority
-
-- [x] Global rules/tokens — injected top of `system.md`
-- [x] Auto-generate "pending tasks" section on `sync-system` — zero-cost orientation every session
-- [x] `folio suggest --screen N` — Claude proposes 1–3 focused next changes using deltas + hypothesis
-
-## Pending fixes
-
-- [ ] Arrow alignment in flow tree — confirm fix worked (need screenshot)
-- [x] Update `folio.md` bootstrap rule: no screenshot on first iteration → write HTML first, screenshot, then iterate
+`<link rel="folio-component" href="compose.html">` in any screen HTML → server inlines the referenced file at serve time. Recursive (depth limit 10). Non-HTML files pass through unchanged. No DB/CLI changes needed.

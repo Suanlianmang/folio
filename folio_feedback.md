@@ -4,22 +4,31 @@ Collected from a real session: importing existing screens, registering variants,
 
 ---
 
+## New (Session 2)
+
+### `folio screens select-variant --file "filename.html"`
+Variant IDs are unpredictable — after registering a file you don't know if it's variant #8 or #10 without checking. `select-variant` requires the ID. Should accept `--file` as an alternative so you can select by filename, which is always known.
+
+### `folio log --variant-id N "..."`
+Logs currently attach to the screen/component, not a specific variant. With 3 variants in exploration, there's no way to know which log entry belongs to which. Should be able to log against a variant directly.
+
+---
+
+## Completed ✓
+
+### `folio screens rename --id N --name "..."`  ✓
+### `folio screens delete --id N`  ✓
+### `folio screens set-description --id N --description "..."`  ✓
+### `folio screens remove-variant --variant-id N`  ✓
+### `folio screens move-variant --variant-id N --to-screen N`  ✓
+### `folio log` top-level command  ✓
+
+---
+
 ## Missing CLI Commands
-
-### `folio screens rename --id N --name "..."`
-No way to rename a screen without direct DB access. Had to run `sqlite3` and `UPDATE screens SET name = ...`.
-
-### `folio screens delete --id N`
-No delete command. Used `DELETE FROM screens WHERE id = N` + manual cleanup of `flow_screens`.
 
 ### `folio screens move-variant --variant-id N --to-screen N`
 Moving a variant from one screen to another required `UPDATE screen_variants SET screen_id = N`. Common when restructuring.
-
-### `folio screens set-description --id N --description "..."`
-Description set at creation only. No way to update it afterward.
-
-### `folio screens remove-variant --variant-id N`
-No way to delete a variant from a screen or component. Used `DELETE FROM screen_variants WHERE id = N` directly. Came up when moving thread variants from a screen into a component — had to clean up the old registrations via sqlite3.
 
 ---
 
@@ -59,32 +68,43 @@ Variants are only viewable one at a time — click to switch. No side-by-side or
 ## Underused Features & How to Fix That
 
 ### `folio screens change` + `record-outcome` — too much ceremony, never used
-Five required flags per call (`--type`, `--target`, `--from`, `--to`, `--reason`) makes it too costly to run naturally after every iteration. It gets skipped. Suggest replacing with a single lightweight command:
-```
-folio log --id N "removed thread strips — testing pure reading focus"
-```
-One line, one string, attached to current selected variant. Low enough friction to actually use. `suggest` then has real history to work from.
+Five required flags per call (`--type`, `--target`, `--from`, `--to`, `--reason`) makes it too costly to run naturally after every iteration. It gets skipped. Replaced by `folio log` — but `log` needs `--variant-id` support to be fully useful.
 
 ### Rationale — set once, never revisited
-Currently used as a free-text field with no prompt. Gets filled once at creation and forgotten. Would get used more if folio prompted for it at the moment of `select-variant` (approval) — "why did this variant win?" That's the natural moment, not a separate command.
+Would get used more if folio prompted for it at the moment of `select-variant` — "why did this variant win?" That's the natural moment, not a separate command.
 
 ### Flag — never used
-No review step in the current workflow means flag never gets triggered. Would become useful if the dashboard surfaced "flagged variants" as a distinct queue, making it feel like an action item rather than a label.
+No review step in the current workflow means flag never gets triggered. Would become useful if the dashboard surfaced flagged variants as a distinct queue.
 
 ### Hypothesis + Focus — set but ignored
-Currently pure metadata — setting them doesn't change what folio does or what I focus on. Would become useful if `folio context` prominently displayed them at the top and `folio suggest` used them as constraints when generating next steps.
+Would become useful if `folio context` prominently displayed them at the top and `folio suggest` used them as constraints when generating next steps.
 
 ---
 
-## Core Missing Feature: `folio log`
+## Core Missing Feature: `folio log` (now shipped — needs variant-level support)
 
-The iteration loop is: write HTML → screenshot → user reacts. Delta recording sits outside this loop — it's a tax, not a natural step. The fix isn't discipline or automation; it's reducing recording to one command with one argument run immediately after screenshot. `folio screens change` has too many flags. `folio log` would replace it: intent in one sentence, attached to the current variant, feeds `suggest` automatically.
+`folio log` shipped and is the right pattern — one line, low friction, fits naturally after screenshot. Missing piece: logs attach to the item, not the variant. With multiple variants in flight, the log is ambiguous. `--variant-id` would complete it.
+
+---
+
+## Architecture Suggestion: Component Reuse
+
+Every screen variant currently copy-pastes the same CSS and JS — compose box, action buttons, popover, pin button, thread strips. Hundreds of lines repeated per file. This means:
+- Reading a screen variant costs full context every time
+- Fixing a component (e.g. compose box) requires editing every file that uses it
+- Variants are hard to compare because they're bloated with shared boilerplate
+
+**Suggestion:** folio should support a simple include system for approved components. Could be as lightweight as a `<link rel="component" href="../components/compose.html">` convention that the folio server resolves at serve time. Screen variants then only contain what's unique to them — layout, structure, the decisions being tested. Approved components are referenced, not duplicated.
+
+This would make variants smaller, comparisons faster, and component changes propagate automatically.
 
 ---
 
 ## What Worked Well
 
-- `folio tree` — single command, full project overview. Replaced needing `screens list` + `components list` + `flows list`.
+- `folio tree` — single command, full project overview.
 - `folio context --type screen --id N` — good single source of truth before iterating.
+- `folio log` — right friction level, now part of the natural loop.
+- `sync-system` auto-generates Pending table — good signal of what's left exploring.
 - Parent-child screen hierarchy — useful for Inbox → Email Detail.
 - Flow linking screens together — intuitive once screens are set up.

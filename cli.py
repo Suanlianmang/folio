@@ -606,6 +606,7 @@ def _cmd_log(args: argparse.Namespace) -> None:
     entity_type = args.type
     entity_id   = args.id
     message     = args.message
+    variant_id  = getattr(args, "variant_id", None)
 
     if entity_type == "screen":
         item = db.get_screen(entity_id)
@@ -618,6 +619,12 @@ def _cmd_log(args: argparse.Namespace) -> None:
         print(f"Error: {entity_type} #{entity_id} not found.")
         sys.exit(1)
 
+    if variant_id is not None:
+        variants = item.get("variants", [])
+        if not any(v["id"] == variant_id for v in variants):
+            print(f"Error: variant #{variant_id} not found on {entity_type} #{entity_id}.")
+            sys.exit(1)
+
     db.add_delta(
         entity_type=entity_type,
         entity_id=entity_id,
@@ -626,8 +633,12 @@ def _cmd_log(args: argparse.Namespace) -> None:
         from_val=None,
         to_val=None,
         reason=message,
+        variant_id=variant_id,
     )
-    print(f"Logged on {entity_type} #{entity_id}: {message}")
+    if variant_id is not None:
+        print(f"Logged on {entity_type} #{entity_id} variant #{variant_id}: {message}")
+    else:
+        print(f"Logged on {entity_type} #{entity_id}: {message}")
 
 
 _PID_FILE = Path.home() / ".folio" / "server.pid"
@@ -771,11 +782,25 @@ def _dispatch_screens(args: argparse.Namespace) -> None:
             print(f"Screen #{screen['id']} parent → #{args.parent}")
 
     elif command == "select-variant":
-        screen = db.select_screen_variant(args.variant_id)
+        variant_id = args.variant_id
+        if variant_id is None:
+            if args.id is None or args.file is None:
+                print("Error: Provide --variant-id or both --id and --file.")
+                sys.exit(1)
+            entity = db.get_screen(args.id)
+            if entity is None:
+                print(f"Error: Screen {args.id} not found.")
+                sys.exit(1)
+            match = next((v for v in entity.get("variants", []) if v["file"] == args.file), None)
+            if match is None:
+                print(f"Error: No variant with file '{args.file}' on screen #{args.id}.")
+                sys.exit(1)
+            variant_id = match["id"]
+        screen = db.select_screen_variant(variant_id)
         if screen is None:
-            print(f"Error: Screen variant {args.variant_id} not found.")
+            print(f"Error: Screen variant {variant_id} not found.")
             sys.exit(1)
-        print(f"Selected variant {args.variant_id} on screen #{screen['id']}: {screen['selected_file']}")
+        print(f"Selected variant {variant_id} on screen #{screen['id']}: {screen['selected_file']}")
 
     elif command == "set-variant-rationale":
         v = db.update_screen_variant(args.variant_id, rationale=args.rationale)
@@ -960,12 +985,26 @@ def _dispatch_components(args: argparse.Namespace) -> None:
         print(f"Unlinked component #{args.id} from screen #{args.screen}.")
 
     elif command == "select-variant":
-        component = db.select_component_variant(args.variant_id)
+        variant_id = args.variant_id
+        if variant_id is None:
+            if args.id is None or args.file is None:
+                print("Error: Provide --variant-id or both --id and --file.")
+                sys.exit(1)
+            entity = db.get_component(args.id)
+            if entity is None:
+                print(f"Error: Component {args.id} not found.")
+                sys.exit(1)
+            match = next((v for v in entity.get("variants", []) if v["file"] == args.file), None)
+            if match is None:
+                print(f"Error: No variant with file '{args.file}' on component #{args.id}.")
+                sys.exit(1)
+            variant_id = match["id"]
+        component = db.select_component_variant(variant_id)
         if component is None:
-            print(f"Error: Component variant {args.variant_id} not found.")
+            print(f"Error: Component variant {variant_id} not found.")
             sys.exit(1)
         print(
-            f"Selected variant {args.variant_id} on component "
+            f"Selected variant {variant_id} on component "
             f"#{component['id']}: {component['selected_file']}"
         )
 
@@ -1111,12 +1150,26 @@ def _dispatch_flows(args: argparse.Namespace) -> None:
         print(f"Unlinked flow #{args.id} from screen #{args.screen}.")
 
     elif command == "select-variant":
-        flow = db.select_flow_variant(args.variant_id)
+        variant_id = args.variant_id
+        if variant_id is None:
+            if args.id is None or args.file is None:
+                print("Error: Provide --variant-id or both --id and --file.")
+                sys.exit(1)
+            entity = db.get_flow(args.id)
+            if entity is None:
+                print(f"Error: Flow {args.id} not found.")
+                sys.exit(1)
+            match = next((v for v in entity.get("variants", []) if v["file"] == args.file), None)
+            if match is None:
+                print(f"Error: No variant with file '{args.file}' on flow #{args.id}.")
+                sys.exit(1)
+            variant_id = match["id"]
+        flow = db.select_flow_variant(variant_id)
         if flow is None:
-            print(f"Error: Flow variant {args.variant_id} not found.")
+            print(f"Error: Flow variant {variant_id} not found.")
             sys.exit(1)
         print(
-            f"Selected variant {args.variant_id} on flow "
+            f"Selected variant {variant_id} on flow "
             f"#{flow['id']}: {flow['selected_file']}"
         )
 
@@ -1262,7 +1315,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--parent", type=int, default=None, help="Parent screen ID (omit to clear)")
 
     p = screens_sub.add_parser("select-variant", help="Set variant as selected on parent screen")
-    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+    p.add_argument("--variant-id", type=int, default=None, dest="variant_id")
+    p.add_argument("--id", type=int, default=None, help="Entity ID (use with --file)")
+    p.add_argument("--file", default=None, help="Variant filename (use with --id)")
 
     p = screens_sub.add_parser("set-variant-rationale", help="Set rationale on a screen variant")
     p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
@@ -1351,7 +1406,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--screen", type=int, required=True, help="Screen ID")
 
     p = components_sub.add_parser("select-variant", help="Set variant as selected on parent component")
-    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+    p.add_argument("--variant-id", type=int, default=None, dest="variant_id")
+    p.add_argument("--id", type=int, default=None, help="Entity ID (use with --file)")
+    p.add_argument("--file", default=None, help="Variant filename (use with --id)")
 
     p = components_sub.add_parser("set-variant-rationale", help="Set rationale on a component variant")
     p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
@@ -1422,7 +1479,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--screen", type=int, required=True, help="Screen ID")
 
     p = flows_sub.add_parser("select-variant", help="Set variant as selected on parent flow")
-    p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+    p.add_argument("--variant-id", type=int, default=None, dest="variant_id")
+    p.add_argument("--id", type=int, default=None, help="Entity ID (use with --file)")
+    p.add_argument("--file", default=None, help="Variant filename (use with --id)")
 
     p = flows_sub.add_parser("set-variant-rationale", help="Set rationale on a flow variant")
     p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
@@ -1502,6 +1561,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_log = sub.add_parser("log", help="Log a one-line iteration note on a screen/component/flow")
     p_log.add_argument("--type", required=True, choices=["screen", "component", "flow"])
     p_log.add_argument("--id", type=int, required=True)
+    p_log.add_argument("--variant-id", type=int, default=None, dest="variant_id")
     p_log.add_argument("message", help="What changed or what you're testing")
 
     return parser
