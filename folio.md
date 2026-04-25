@@ -69,6 +69,19 @@ Read `.folio/system.md` for current decisions.
 
 ---
 
+## Step 3.5 — Load screenshots for active items
+
+**First iteration rule:** If this is the first design pass (no HTML exists yet), skip this step — write the HTML first. Only screenshot after the file exists.
+
+For every item about to be worked on:
+
+1. Check if `.folio/screenshots/<type>-<id>.png` exists.
+2. Exists → read it with the `Read` tool before touching any HTML. Never read raw HTML to understand current design state — use the screenshot.
+3. Missing and HTML exists → run `folio screenshot --type <type> --id <id>` first, then read it.
+4. Missing and no HTML yet → skip, write the HTML first, then come back to this step.
+
+---
+
 ## Step 4 — Report to user
 
 Brief summary:
@@ -139,13 +152,20 @@ Never report a UI fix as done without a screenshot.
 
 ## Workflow
 
+**Before any design iteration:**
+1. Read screenshot (Step 3.5) — never read raw HTML to understand current state.
+2. Read existing rationale (`folio screens show --id N`) — know intent before changing anything.
+3. Check components (`folio components list`) — reuse approved components, never reimplement.
+
 **Exploring** — variants exist, no selection. Compare, surface tradeoffs, ask user for direction.
 
 **Approving** — user picks. Run `select-variant`, `set-status approved`, `set-rationale`. Then `sync-system`.
+- Rationale is mandatory before `set-status approved`. If missing, ask user for it first.
 
 **Finalising** — locked. Set `finalised`. Rationale must exist first.
 
 **New work** — user describes screen/component/flow. `add`, then `add-variant` per file.
+- Always check `folio components list` first — reuse existing approved components.
 
 After any batch of approvals → always `sync-system`.
 

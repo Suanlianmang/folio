@@ -56,6 +56,12 @@ def _print_screen_detail(screen: dict) -> None:
         print(f"  Selected:    {screen['selected_file']}")
     if screen.get("rationale"):
         print(f"  Rationale:   {screen['rationale']}")
+    if screen.get("hypothesis"):
+        print(f"  Hypothesis:  {screen['hypothesis']}")
+    if screen.get("focus"):
+        print(f"  Focus:       {screen['focus']}")
+    if screen.get("needs_review"):
+        print(f"  Needs review: yes")
     print(f"  Created:     {screen['created_at']}")
     print(f"  Updated:     {screen['updated_at']}")
 
@@ -108,6 +114,12 @@ def _print_component_detail(component: dict) -> None:
         print(f"  Selected:    {component['selected_file']}")
     if component.get("rationale"):
         print(f"  Rationale:   {component['rationale']}")
+    if component.get("hypothesis"):
+        print(f"  Hypothesis:  {component['hypothesis']}")
+    if component.get("focus"):
+        print(f"  Focus:       {component['focus']}")
+    if component.get("needs_review"):
+        print(f"  Needs review: yes")
     used_in = component.get("used_in", [])
     if used_in:
         names = ", ".join(s["name"] for s in used_in)
@@ -164,6 +176,12 @@ def _print_flow_detail(flow: dict) -> None:
         print(f"  Selected:    {flow['selected_file']}")
     if flow.get("rationale"):
         print(f"  Rationale:   {flow['rationale']}")
+    if flow.get("hypothesis"):
+        print(f"  Hypothesis:  {flow['hypothesis']}")
+    if flow.get("focus"):
+        print(f"  Focus:       {flow['focus']}")
+    if flow.get("needs_review"):
+        print(f"  Needs review: yes")
     screens = flow.get("screens", [])
     if screens:
         names = ", ".join(s["name"] for s in screens)
@@ -304,6 +322,264 @@ def _cmd_screenshot(args: argparse.Namespace) -> None:
 def _cmd_sync_system(_args: argparse.Namespace) -> None:
     db.sync_system()
     print(f"system.md updated: {db.SYSTEM_MD_PATH}")
+
+
+def _cmd_context(args: argparse.Namespace) -> None:
+    entity_type = args.type
+    entity_id   = args.id
+
+    if entity_type == "screen":
+        item = db.get_screen(entity_id)
+    elif entity_type == "component":
+        item = db.get_component(entity_id)
+    else:
+        item = db.get_flow(entity_id)
+
+    if item is None:
+        print(f"Error: {entity_type} #{entity_id} not found.")
+        sys.exit(1)
+
+    label = entity_type.capitalize()
+    review_label = "yes" if item.get("needs_review") else "no"
+    print(f"=== CONTEXT: {label} #{item['id']} — {item['name']} ===")
+    print(f"Status: {item['status']}  |  Needs review: {review_label}")
+    if item.get("selected_file"):
+        print(f"Selected: {item['selected_file']}")
+    if item.get("hypothesis"):
+        print(f"Hypothesis: {item['hypothesis']}")
+    if item.get("focus"):
+        print(f"Focus: {item['focus']}")
+
+    # Inject global rules from system.md if markers present.
+    if db.SYSTEM_MD_PATH.exists():
+        content = db.SYSTEM_MD_PATH.read_text(encoding="utf-8")
+        start_marker = "<!-- GLOBAL-RULES-START -->"
+        end_marker   = "<!-- GLOBAL-RULES-END -->"
+        if start_marker in content and end_marker in content:
+            start_idx = content.index(start_marker) + len(start_marker)
+            end_idx   = content.index(end_marker)
+            rules_text = content[start_idx:end_idx].strip()
+            if rules_text:
+                print()
+                print("--- GLOBAL RULES (from system.md) ---")
+                print(rules_text)
+                print("--------------------------------------")
+
+    deltas = db.list_deltas(entity_type, entity_id, limit=5)
+    print()
+    print("RECENT CHANGES (last 5):")
+    if deltas:
+        for delta in deltas:
+            date_str = (delta.get("created_at") or "")[:10]
+            target   = delta.get("target") or ""
+            from_val = delta.get("from_val") or ""
+            to_val   = delta.get("to_val") or ""
+            reason   = delta.get("reason") or ""
+            outcome  = delta.get("outcome") or "not recorded"
+            change_str = f"{from_val!r} → {to_val!r}" if (from_val or to_val) else ""
+            target_str = f"{target}: {change_str}" if change_str else target
+            print(f"  {date_str}  {delta['type']}   {target_str}")
+            if reason:
+                print(f"              Reason:  {reason}")
+            print(f"              Outcome: {outcome}")
+    else:
+        print("  (none)")
+
+    variants = item.get("variants", [])
+    print()
+    print(f"VARIANTS ({len(variants)}):")
+    if variants:
+        for v in variants:
+            selected_marker = "●" if v["file"] == item.get("selected_file") else " "
+            label_str = f"  [{v['label']}]" if v.get("label") else ""
+            flag_str = f"  — {v['flag']}: {v.get('flag_reason') or ''}" if v.get("flag") else ""
+            print(f"  {selected_marker} {v['file']}{label_str}{flag_str}")
+    else:
+        print("  (none)")
+
+
+def _cmd_tree(_args: argparse.Namespace) -> None:
+    screens    = db.list_screens()
+    components = db.list_components()
+    flows      = db.list_flows()
+
+    print("=== PROJECT TREE ===")
+    print()
+
+    # Build id→screen map and parent map for hierarchy.
+    by_id: dict[int, dict] = {s["id"]: s for s in screens}
+
+    # Separate roots and children.
+    roots    = [s for s in screens if not s.get("parent_id")]
+    by_parent: dict[int, list[dict]] = {}
+    for s in screens:
+        pid = s.get("parent_id")
+        if pid:
+            by_parent.setdefault(pid, []).append(s)
+
+    def _print_screen_tree_node(screen: dict, indent: int) -> None:
+        prefix = "  " * indent
+        selected_marker = "●" if screen.get("selected_file") else " "
+        file_str = f"  ● {screen['selected_file']}" if screen.get("selected_file") else ""
+        print(f"{prefix}#{screen['id']}  {screen['status']}  {screen['name']}{file_str}")
+        for child in by_parent.get(screen["id"], []):
+            _print_screen_tree_node(child, indent + 1)
+
+    print(f"SCREENS ({len(screens)})")
+    if screens:
+        for root in roots:
+            _print_screen_tree_node(root, 1)
+    else:
+        print("  (none)")
+
+    print()
+    print(f"COMPONENTS ({len(components)})")
+    if components:
+        for c in components:
+            selected_marker = "●" if c.get("selected_file") else " "
+            file_str = f"  ● {c['selected_file']}" if c.get("selected_file") else ""
+            print(f"  #{c['id']}  {c['status']}  {c['name']}{file_str}")
+    else:
+        print("  (none)")
+
+    print()
+    print(f"FLOWS ({len(flows)})")
+    if flows:
+        for f in flows:
+            file_str = f"  ● {f['selected_file']}" if f.get("selected_file") else ""
+            print(f"  #{f['id']}  {f['status']}  {f['name']}{file_str}")
+            linked_screens = f.get("screens", [])
+            if linked_screens:
+                names = ", ".join(s["name"] for s in linked_screens)
+                print(f"      Screens: {names}")
+    else:
+        print("  (none)")
+
+
+def _cmd_explain(args: argparse.Namespace) -> None:
+    entity_type = args.type
+    entity_id   = args.id
+
+    if entity_type == "screen":
+        item = db.get_screen(entity_id)
+    elif entity_type == "component":
+        item = db.get_component(entity_id)
+    else:
+        item = db.get_flow(entity_id)
+
+    if item is None:
+        print(f"Error: {entity_type} #{entity_id} not found.")
+        sys.exit(1)
+
+    label = entity_type.capitalize()
+    print(f"=== EXPLAIN: {label} #{item['id']} — {item['name']} ===")
+    print(f"Status:     {item['status']}")
+    print(f"Selected:   {item.get('selected_file') or '(none)'}")
+    print(f"Hypothesis: {item.get('hypothesis') or '(not set)'}")
+    print(f"Focus:      {item.get('focus') or '(not set)'}")
+
+    deltas = db.list_deltas(entity_type, entity_id)
+
+    print()
+    print("WHAT WE'VE TRIED:")
+    if deltas:
+        for delta in reversed(deltas):
+            date_str = (delta.get("created_at") or "")[:10]
+            target   = delta.get("target") or ""
+            from_val = delta.get("from_val") or ""
+            to_val   = delta.get("to_val") or ""
+            reason   = delta.get("reason") or ""
+            outcome  = delta.get("outcome") or "(none)"
+            change_str = f"{from_val!r} → {to_val!r}" if (from_val or to_val) else ""
+            target_str = f"{target}: {change_str}" if change_str else target
+            print(f"  #{delta['id']}  {date_str}  {delta['type']}  {target_str}")
+            if reason:
+                print(f"        Reason:  {reason}")
+            print(f"        Outcome: {outcome}")
+    else:
+        print("  (none)")
+
+    variants = item.get("variants", [])
+    print()
+    print("VARIANTS:")
+    if variants:
+        for v in variants:
+            selected_marker = "●" if v["file"] == item.get("selected_file") else " "
+            label_str    = f" [{v['label']}]" if v.get("label") else ""
+            rationale_str = f"  rationale: {v['rationale']}" if v.get("rationale") else ""
+            flag_str = f"  [needs-revision: {v.get('flag_reason') or ''}]" if v.get("flag") else ""
+            print(f"  {selected_marker} {v['file']}{label_str}{rationale_str}{flag_str}")
+    else:
+        print("  (none)")
+
+    open_questions = [d for d in deltas if not d.get("outcome")]
+    print()
+    print("OPEN QUESTIONS:")
+    if open_questions:
+        for delta in open_questions:
+            target = delta.get("target") or ""
+            print(f"  #{delta['id']}  {delta['type']}  {target} — no outcome recorded")
+    else:
+        print("  (none)")
+
+
+def _cmd_suggest(args: argparse.Namespace) -> None:
+    entity_type = args.type
+    entity_id   = args.id
+
+    if entity_type == "screen":
+        item = db.get_screen(entity_id)
+    elif entity_type == "component":
+        item = db.get_component(entity_id)
+    else:
+        item = db.get_flow(entity_id)
+
+    if item is None:
+        print(f"Error: {entity_type} #{entity_id} not found.")
+        sys.exit(1)
+
+    label   = entity_type.capitalize()
+    deltas  = db.list_deltas(entity_type, entity_id, limit=5)
+    variants = item.get("variants", [])
+
+    print(f"=== SUGGEST PROMPT: {label} #{item['id']} — {item['name']} ===")
+    print()
+    print("Paste this into your Claude conversation:")
+    print()
+    print("---")
+    print(f"Current {entity_type}: {item['name']} (#{item['id']})")
+    print(f"Status: {item['status']}")
+    print(f"Hypothesis: {item.get('hypothesis') or '(not set)'}")
+    print(f"Focus: {item.get('focus') or '(not set)'}")
+
+    if deltas:
+        print()
+        print("Recent changes:")
+        for delta in reversed(deltas):
+            target   = delta.get("target") or ""
+            from_val = delta.get("from_val") or ""
+            to_val   = delta.get("to_val") or ""
+            outcome  = delta.get("outcome") or "no outcome"
+            change_str = f"{from_val!r} → {to_val!r}" if (from_val or to_val) else ""
+            target_str = f"{target}: {change_str}" if change_str else target
+            print(f"  - {delta['type']} on {target_str} (outcome: {outcome})")
+
+    if variants:
+        print()
+        variant_parts = []
+        for v in variants:
+            is_selected = v["file"] == item.get("selected_file")
+            suffix = " (selected)" if is_selected else ""
+            flag   = f" (needs-revision)" if v.get("flag") else ""
+            variant_parts.append(f"{v['file']}{suffix}{flag}")
+        print(f"Variants: {', '.join(variant_parts)}")
+
+    print()
+    print("Please suggest 1–3 focused next changes to test. For each suggestion:")
+    print("1. What to change (target element + specific change)")
+    print("2. Why (what hypothesis this tests)")
+    print("3. What outcome would confirm or deny the hypothesis")
+    print("---")
 
 
 _PID_FILE = Path.home() / ".folio" / "server.pid"
@@ -455,6 +731,60 @@ def _dispatch_screens(args: argparse.Namespace) -> None:
             sys.exit(1)
         print(f"Screen variant #{v['id']} unflagged.")
 
+    elif command == "change":
+        prior = db.list_deltas("screen", args.id)
+        matching = [d for d in prior if d.get("target") == args.target]
+        if matching:
+            print(
+                f"Warning: target \"{args.target}\" was changed {len(matching)} "
+                f"time(s) before — check for regressions."
+            )
+        db.add_delta(
+            entity_type="screen",
+            entity_id=args.id,
+            type=args.type,
+            target=args.target,
+            from_val=getattr(args, "from_val", None),
+            to_val=getattr(args, "to_val", None),
+            reason=getattr(args, "reason", None),
+        )
+        print(f"Recorded change on screen #{args.id}: {args.type} on \"{args.target}\"")
+
+    elif command == "set-hypothesis":
+        screen = db.update_screen(args.id, hypothesis=args.hypothesis)
+        if screen is None:
+            print(f"Error: Screen {args.id} not found.")
+            sys.exit(1)
+        print(f"Screen #{args.id} hypothesis updated.")
+
+    elif command == "set-focus":
+        screen = db.update_screen(args.id, focus=args.area)
+        if screen is None:
+            print(f"Error: Screen {args.id} not found.")
+            sys.exit(1)
+        print(f"Screen #{args.id} focus updated.")
+
+    elif command == "needs-review":
+        screen = db.update_screen(args.id, needs_review=1)
+        if screen is None:
+            print(f"Error: Screen {args.id} not found.")
+            sys.exit(1)
+        print(f"Screen #{args.id} marked for review.")
+
+    elif command == "clear-needs-review":
+        screen = db.update_screen(args.id, needs_review=0)
+        if screen is None:
+            print(f"Error: Screen {args.id} not found.")
+            sys.exit(1)
+        print(f"Screen #{args.id} review cleared.")
+
+    elif command == "record-outcome":
+        delta = db.update_delta_outcome(args.delta_id, args.outcome)
+        if delta is None:
+            print(f"Error: Delta {args.delta_id} not found.")
+            sys.exit(1)
+        print(f"Delta #{args.delta_id} outcome recorded.")
+
     else:
         print(f"Error: Unknown screens command: {command!r}")
         sys.exit(1)
@@ -554,6 +884,60 @@ def _dispatch_components(args: argparse.Namespace) -> None:
             sys.exit(1)
         print(f"Component variant #{v['id']} unflagged.")
 
+    elif command == "change":
+        prior = db.list_deltas("component", args.id)
+        matching = [d for d in prior if d.get("target") == args.target]
+        if matching:
+            print(
+                f"Warning: target \"{args.target}\" was changed {len(matching)} "
+                f"time(s) before — check for regressions."
+            )
+        db.add_delta(
+            entity_type="component",
+            entity_id=args.id,
+            type=args.type,
+            target=args.target,
+            from_val=getattr(args, "from_val", None),
+            to_val=getattr(args, "to_val", None),
+            reason=getattr(args, "reason", None),
+        )
+        print(f"Recorded change on component #{args.id}: {args.type} on \"{args.target}\"")
+
+    elif command == "set-hypothesis":
+        component = db.update_component(args.id, hypothesis=args.hypothesis)
+        if component is None:
+            print(f"Error: Component {args.id} not found.")
+            sys.exit(1)
+        print(f"Component #{args.id} hypothesis updated.")
+
+    elif command == "set-focus":
+        component = db.update_component(args.id, focus=args.area)
+        if component is None:
+            print(f"Error: Component {args.id} not found.")
+            sys.exit(1)
+        print(f"Component #{args.id} focus updated.")
+
+    elif command == "needs-review":
+        component = db.update_component(args.id, needs_review=1)
+        if component is None:
+            print(f"Error: Component {args.id} not found.")
+            sys.exit(1)
+        print(f"Component #{args.id} marked for review.")
+
+    elif command == "clear-needs-review":
+        component = db.update_component(args.id, needs_review=0)
+        if component is None:
+            print(f"Error: Component {args.id} not found.")
+            sys.exit(1)
+        print(f"Component #{args.id} review cleared.")
+
+    elif command == "record-outcome":
+        delta = db.update_delta_outcome(args.delta_id, args.outcome)
+        if delta is None:
+            print(f"Error: Delta {args.delta_id} not found.")
+            sys.exit(1)
+        print(f"Delta #{args.delta_id} outcome recorded.")
+
     else:
         print(f"Error: Unknown components command: {command!r}")
         sys.exit(1)
@@ -651,6 +1035,60 @@ def _dispatch_flows(args: argparse.Namespace) -> None:
             sys.exit(1)
         print(f"Flow variant #{v['id']} unflagged.")
 
+    elif command == "change":
+        prior = db.list_deltas("flow", args.id)
+        matching = [d for d in prior if d.get("target") == args.target]
+        if matching:
+            print(
+                f"Warning: target \"{args.target}\" was changed {len(matching)} "
+                f"time(s) before — check for regressions."
+            )
+        db.add_delta(
+            entity_type="flow",
+            entity_id=args.id,
+            type=args.type,
+            target=args.target,
+            from_val=getattr(args, "from_val", None),
+            to_val=getattr(args, "to_val", None),
+            reason=getattr(args, "reason", None),
+        )
+        print(f"Recorded change on flow #{args.id}: {args.type} on \"{args.target}\"")
+
+    elif command == "set-hypothesis":
+        flow = db.update_flow(args.id, hypothesis=args.hypothesis)
+        if flow is None:
+            print(f"Error: Flow {args.id} not found.")
+            sys.exit(1)
+        print(f"Flow #{args.id} hypothesis updated.")
+
+    elif command == "set-focus":
+        flow = db.update_flow(args.id, focus=args.area)
+        if flow is None:
+            print(f"Error: Flow {args.id} not found.")
+            sys.exit(1)
+        print(f"Flow #{args.id} focus updated.")
+
+    elif command == "needs-review":
+        flow = db.update_flow(args.id, needs_review=1)
+        if flow is None:
+            print(f"Error: Flow {args.id} not found.")
+            sys.exit(1)
+        print(f"Flow #{args.id} marked for review.")
+
+    elif command == "clear-needs-review":
+        flow = db.update_flow(args.id, needs_review=0)
+        if flow is None:
+            print(f"Error: Flow {args.id} not found.")
+            sys.exit(1)
+        print(f"Flow #{args.id} review cleared.")
+
+    elif command == "record-outcome":
+        delta = db.update_delta_outcome(args.delta_id, args.outcome)
+        if delta is None:
+            print(f"Error: Delta {args.delta_id} not found.")
+            sys.exit(1)
+        print(f"Delta #{args.delta_id} outcome recorded.")
+
     else:
         print(f"Error: Unknown flows command: {command!r}")
         sys.exit(1)
@@ -729,6 +1167,32 @@ def _build_parser() -> argparse.ArgumentParser:
     p = screens_sub.add_parser("unflag-variant", help="Clear flag on a screen variant")
     p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
 
+    p = screens_sub.add_parser("change", help="Record a design change delta on a screen")
+    p.add_argument("--id", type=int, required=True)
+    p.add_argument("--type", required=True, choices=["layout", "copy", "color", "spacing", "interaction", "other"])
+    p.add_argument("--target", required=True)
+    p.add_argument("--from", dest="from_val", default=None)
+    p.add_argument("--to", dest="to_val", default=None)
+    p.add_argument("--reason", default=None)
+
+    p = screens_sub.add_parser("set-hypothesis", help="Set working hypothesis on a screen")
+    p.add_argument("--id", type=int, required=True)
+    p.add_argument("--hypothesis", required=True)
+
+    p = screens_sub.add_parser("set-focus", help="Set attention focus area on a screen")
+    p.add_argument("--id", type=int, required=True)
+    p.add_argument("--area", required=True)
+
+    p = screens_sub.add_parser("needs-review", help="Mark screen for human review")
+    p.add_argument("--id", type=int, required=True)
+
+    p = screens_sub.add_parser("clear-needs-review", help="Clear review flag on a screen")
+    p.add_argument("--id", type=int, required=True)
+
+    p = screens_sub.add_parser("record-outcome", help="Record outcome on a delta")
+    p.add_argument("--delta-id", type=int, required=True, dest="delta_id")
+    p.add_argument("--outcome", required=True)
+
     # --- components ---
     p_components  = sub.add_parser("components", help="Component commands")
     components_sub = p_components.add_subparsers(dest="command", required=True)
@@ -773,6 +1237,32 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p = components_sub.add_parser("unflag-variant", help="Clear flag on a component variant")
     p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
+
+    p = components_sub.add_parser("change", help="Record a design change delta on a component")
+    p.add_argument("--id", type=int, required=True)
+    p.add_argument("--type", required=True, choices=["layout", "copy", "color", "spacing", "interaction", "other"])
+    p.add_argument("--target", required=True)
+    p.add_argument("--from", dest="from_val", default=None)
+    p.add_argument("--to", dest="to_val", default=None)
+    p.add_argument("--reason", default=None)
+
+    p = components_sub.add_parser("set-hypothesis", help="Set working hypothesis on a component")
+    p.add_argument("--id", type=int, required=True)
+    p.add_argument("--hypothesis", required=True)
+
+    p = components_sub.add_parser("set-focus", help="Set attention focus area on a component")
+    p.add_argument("--id", type=int, required=True)
+    p.add_argument("--area", required=True)
+
+    p = components_sub.add_parser("needs-review", help="Mark component for human review")
+    p.add_argument("--id", type=int, required=True)
+
+    p = components_sub.add_parser("clear-needs-review", help="Clear review flag on a component")
+    p.add_argument("--id", type=int, required=True)
+
+    p = components_sub.add_parser("record-outcome", help="Record outcome on a delta")
+    p.add_argument("--delta-id", type=int, required=True, dest="delta_id")
+    p.add_argument("--outcome", required=True)
 
     # --- flows ---
     p_flows  = sub.add_parser("flows", help="Flow commands")
@@ -819,6 +1309,32 @@ def _build_parser() -> argparse.ArgumentParser:
     p = flows_sub.add_parser("unflag-variant", help="Clear flag on a flow variant")
     p.add_argument("--variant-id", type=int, required=True, dest="variant_id")
 
+    p = flows_sub.add_parser("change", help="Record a design change delta on a flow")
+    p.add_argument("--id", type=int, required=True)
+    p.add_argument("--type", required=True, choices=["layout", "copy", "color", "spacing", "interaction", "other"])
+    p.add_argument("--target", required=True)
+    p.add_argument("--from", dest="from_val", default=None)
+    p.add_argument("--to", dest="to_val", default=None)
+    p.add_argument("--reason", default=None)
+
+    p = flows_sub.add_parser("set-hypothesis", help="Set working hypothesis on a flow")
+    p.add_argument("--id", type=int, required=True)
+    p.add_argument("--hypothesis", required=True)
+
+    p = flows_sub.add_parser("set-focus", help="Set attention focus area on a flow")
+    p.add_argument("--id", type=int, required=True)
+    p.add_argument("--area", required=True)
+
+    p = flows_sub.add_parser("needs-review", help="Mark flow for human review")
+    p.add_argument("--id", type=int, required=True)
+
+    p = flows_sub.add_parser("clear-needs-review", help="Clear review flag on a flow")
+    p.add_argument("--id", type=int, required=True)
+
+    p = flows_sub.add_parser("record-outcome", help="Record outcome on a delta")
+    p.add_argument("--delta-id", type=int, required=True, dest="delta_id")
+    p.add_argument("--outcome", required=True)
+
     # --- top-level flat commands ---
     sub.add_parser("init", help="Init DB, copy system.md, seed from design/")
     sub.add_parser("sync-system", help="Write decisions table to system.md")
@@ -842,6 +1358,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sc.add_argument("--id", type=int, required=True)
     p_sc.add_argument("--width",  type=int, default=1280)
     p_sc.add_argument("--height", type=int, default=800)
+
+    p_ctx = sub.add_parser("context", help="Show context for a screen/component/flow")
+    p_ctx.add_argument("--type", required=True, choices=["screen", "component", "flow"])
+    p_ctx.add_argument("--id", type=int, required=True)
+
+    sub.add_parser("tree", help="Show project tree")
+
+    p_exp = sub.add_parser("explain", help="Show reorientation doc for a screen/component/flow")
+    p_exp.add_argument("--type", required=True, choices=["screen", "component", "flow"])
+    p_exp.add_argument("--id", type=int, required=True)
+
+    p_sug = sub.add_parser("suggest", help="Generate a Claude suggestion prompt for an item")
+    p_sug.add_argument("--type", required=True, choices=["screen", "component", "flow"])
+    p_sug.add_argument("--id", type=int, required=True)
 
     return parser
 
@@ -873,6 +1403,14 @@ def main() -> None:
             _cmd_screenshot(args)
         elif args.group == "update":
             _cmd_update(args)
+        elif args.group == "context":
+            _cmd_context(args)
+        elif args.group == "tree":
+            _cmd_tree(args)
+        elif args.group == "explain":
+            _cmd_explain(args)
+        elif args.group == "suggest":
+            _cmd_suggest(args)
         else:
             print(f"Error: Unknown group: {args.group!r}")
             sys.exit(1)

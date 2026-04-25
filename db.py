@@ -148,6 +148,19 @@ CREATE TABLE IF NOT EXISTS component_usage (
     screen_id    INTEGER NOT NULL REFERENCES screens(id) ON DELETE CASCADE,
     PRIMARY KEY (component_id, screen_id)
 );
+
+CREATE TABLE IF NOT EXISTS deltas (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('screen','component','flow')),
+    entity_id   INTEGER NOT NULL,
+    type        TEXT NOT NULL,
+    target      TEXT,
+    from_val    TEXT,
+    to_val      TEXT,
+    reason      TEXT,
+    outcome     TEXT,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -163,6 +176,7 @@ def init_db() -> None:
     conn = get_db()
     conn.executescript(_SCHEMA)
     _migrate_variants(conn)
+    _migrate_entities(conn)
     conn.commit()
     conn.close()
 
@@ -193,11 +207,27 @@ def _migrate_variants(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
+_ENTITY_TABLES = ("screens", "components", "flows")
+_NEW_ENTITY_COLS = (
+    ("hypothesis",   "TEXT"),
+    ("focus",        "TEXT"),
+    ("needs_review", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
+def _migrate_entities(conn: sqlite3.Connection) -> None:
+    for table in _ENTITY_TABLES:
+        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        for col, decl in _NEW_ENTITY_COLS:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+
 _VALID_STATUSES = {"exploring", "approved", "finalised"}
 
-_VALID_SCREEN_FIELDS    = {"name", "description", "usage", "selected_file", "rationale", "status"}
-_VALID_COMPONENT_FIELDS = {"name", "description", "usage", "selected_file", "rationale", "status"}
-_VALID_FLOW_FIELDS      = {"name", "description", "usage", "selected_file", "rationale", "status"}
+_VALID_SCREEN_FIELDS    = {"name", "description", "usage", "selected_file", "rationale", "status", "hypothesis", "focus", "needs_review"}
+_VALID_COMPONENT_FIELDS = {"name", "description", "usage", "selected_file", "rationale", "status", "hypothesis", "focus", "needs_review"}
+_VALID_FLOW_FIELDS      = {"name", "description", "usage", "selected_file", "rationale", "status", "hypothesis", "focus", "needs_review"}
 
 _VALID_VARIANT_FIELDS = {"label", "ui_description", "notes", "rationale", "flag", "flag_reason"}
 _VALID_FLAGS = {None, "needs-revision"}
@@ -1089,6 +1119,88 @@ def unlink_flow_screen(flow_id: int, screen_id: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Delta CRUD
+# ---------------------------------------------------------------------------
+
+_VALID_ENTITY_TYPES = {"screen", "component", "flow"}
+_VALID_DELTA_TYPES  = {"layout", "copy", "color", "spacing", "interaction", "other"}
+
+
+def add_delta(
+    entity_type: str,
+    entity_id: int,
+    type: str,
+    target: str | None = None,
+    from_val: str | None = None,
+    to_val: str | None = None,
+    reason: str | None = None,
+) -> dict:
+    """Insert a new delta and return it as a dict."""
+    assert entity_type in _VALID_ENTITY_TYPES, f"Invalid entity_type: {entity_type!r}"
+    assert isinstance(entity_id, int), f"entity_id must be int: {entity_id!r}"
+    assert entity_id > 0, f"entity_id must be positive: {entity_id}"
+    assert type in _VALID_DELTA_TYPES, f"Invalid delta type: {type!r}"
+
+    conn = get_db()
+    cursor = conn.execute(
+        """
+        INSERT INTO deltas (entity_type, entity_id, type, target, from_val, to_val, reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (entity_type, entity_id, type, target, from_val, to_val, reason),
+    )
+    delta_id = cursor.lastrowid
+    assert delta_id is not None, "INSERT into deltas returned no rowid"
+
+    conn.commit()
+    row = conn.execute("SELECT * FROM deltas WHERE id = ?", (delta_id,)).fetchone()
+    conn.close()
+
+    assert row is not None, f"Newly created delta {delta_id} not found"
+    return _row_to_dict(row)
+
+
+def list_deltas(entity_type: str, entity_id: int, limit: int | None = None) -> list[dict]:
+    """Return deltas for an entity, newest first. Optionally limit count."""
+    assert entity_type in _VALID_ENTITY_TYPES, f"Invalid entity_type: {entity_type!r}"
+    assert isinstance(entity_id, int), f"entity_id must be int: {entity_id!r}"
+    assert entity_id > 0, f"entity_id must be positive: {entity_id}"
+
+    sql = (
+        "SELECT * FROM deltas WHERE entity_type = ? AND entity_id = ? "
+        "ORDER BY created_at DESC, id DESC"
+    )
+    conn = get_db()
+    if limit is not None:
+        assert isinstance(limit, int) and limit > 0, f"limit must be positive int: {limit!r}"
+        rows = conn.execute(sql + " LIMIT ?", (entity_type, entity_id, limit)).fetchall()
+    else:
+        rows = conn.execute(sql, (entity_type, entity_id)).fetchall()
+    conn.close()
+    return [_row_to_dict(r) for r in rows]
+
+
+def update_delta_outcome(delta_id: int, outcome: str) -> dict | None:
+    """Set the outcome on a delta. Returns updated delta or None if not found."""
+    assert isinstance(delta_id, int), f"delta_id must be int: {delta_id!r}"
+    assert delta_id > 0, f"delta_id must be positive: {delta_id}"
+    assert isinstance(outcome, str), f"outcome must be str: {outcome!r}"
+
+    conn = get_db()
+    cursor = conn.execute(
+        "UPDATE deltas SET outcome = ? WHERE id = ?",
+        (outcome, delta_id),
+    )
+    if cursor.rowcount == 0:
+        conn.close()
+        return None
+    conn.commit()
+    row = conn.execute("SELECT * FROM deltas WHERE id = ?", (delta_id,)).fetchone()
+    conn.close()
+    return _row_to_dict(row)
+
+
+# ---------------------------------------------------------------------------
 # Seed from design directory
 # ---------------------------------------------------------------------------
 
@@ -1163,12 +1275,14 @@ def seed_from_design() -> int:
 
 _DECISIONS_START = "<!-- DECISIONS-START -->"
 _DECISIONS_END   = "<!-- DECISIONS-END -->"
+_PENDING_START   = "<!-- PENDING-START -->"
+_PENDING_END     = "<!-- PENDING-END -->"
 
 
 def sync_system() -> str:
     """
-    Read approved/finalised items from all three tables and write a decisions table
-    between the marker comments in system.md. Returns the new file content.
+    Write decisions table and pending table into system.md marker sections.
+    Returns the final file content.
     """
     assert SYSTEM_MD_PATH.exists(), (
         f"system.md not found at {str(SYSTEM_MD_PATH)!r} — run init first"
@@ -1209,9 +1323,52 @@ def sync_system() -> str:
         ).fetchall()
     ]
 
+    # Query pending (exploring) items with variant counts.
+    pending_screen_rows = [
+        _row_to_dict(r) for r in conn.execute(
+            """
+            SELECT s.id, s.name, s.hypothesis,
+                   COUNT(sv.id) AS variant_count
+            FROM screens s
+            LEFT JOIN screen_variants sv ON sv.screen_id = s.id
+            WHERE s.status = 'exploring'
+            GROUP BY s.id
+            ORDER BY s.name
+            """
+        ).fetchall()
+    ]
+
+    pending_component_rows = [
+        _row_to_dict(r) for r in conn.execute(
+            """
+            SELECT c.id, c.name, c.hypothesis,
+                   COUNT(cv.id) AS variant_count
+            FROM components c
+            LEFT JOIN component_variants cv ON cv.component_id = c.id
+            WHERE c.status = 'exploring'
+            GROUP BY c.id
+            ORDER BY c.name
+            """
+        ).fetchall()
+    ]
+
+    pending_flow_rows = [
+        _row_to_dict(r) for r in conn.execute(
+            """
+            SELECT f.id, f.name, f.hypothesis,
+                   COUNT(fv.id) AS variant_count
+            FROM flows f
+            LEFT JOIN flow_variants fv ON fv.flow_id = f.id
+            WHERE f.status = 'exploring'
+            GROUP BY f.id
+            ORDER BY f.name
+            """
+        ).fetchall()
+    ]
+
     conn.close()
 
-    # Merge all rows with explicit type label
+    # Build decisions table.
     decided_items: list[dict] = []
     for row in screen_rows:
         row["type"] = "screen"
@@ -1225,7 +1382,6 @@ def sync_system() -> str:
 
     decided_items.sort(key=lambda r: (r["type"], r["name"]))
 
-    # Build decisions table
     lines: list[str] = []
     lines.append("")
     lines.append("| # | Type | Name | Status | Selected File | Rationale |")
@@ -1257,13 +1413,52 @@ def sync_system() -> str:
 
     assert start_index < end_index, "DECISIONS-START appears after DECISIONS-END"
 
-    new_content = (
+    working_content = (
         content[:start_index]
         + table_block
         + content[end_index:]
     )
 
-    with open(SYSTEM_MD_PATH, "w", encoding="utf-8") as f:
-        f.write(new_content)
+    # Update PENDING section if markers exist — skip silently if absent.
+    if _PENDING_START in working_content and _PENDING_END in working_content:
+        pending_items: list[dict] = []
+        for row in pending_screen_rows:
+            row["type"] = "screen"
+            pending_items.append(row)
+        for row in pending_component_rows:
+            row["type"] = "component"
+            pending_items.append(row)
+        for row in pending_flow_rows:
+            row["type"] = "flow"
+            pending_items.append(row)
 
-    return new_content
+        pending_lines: list[str] = []
+        pending_lines.append("")
+        pending_lines.append("| # | Type | Name | Variants | Hypothesis |")
+        pending_lines.append("|---|------|------|----------|------------|")
+
+        for item in pending_items:
+            hyp = (item.get("hypothesis") or "").replace("|", "\\|")
+            pending_lines.append(
+                f"| {item['id']} | {item['type']} | {item['name']} "
+                f"| {item['variant_count']} | {hyp} |"
+            )
+
+        pending_lines.append("")
+        pending_block = "\n".join(pending_lines)
+
+        ps_idx = working_content.index(_PENDING_START) + len(_PENDING_START)
+        pe_idx = working_content.index(_PENDING_END)
+
+        assert ps_idx < pe_idx, "PENDING-START appears after PENDING-END"
+
+        working_content = (
+            working_content[:ps_idx]
+            + pending_block
+            + working_content[pe_idx:]
+        )
+
+    with open(SYSTEM_MD_PATH, "w", encoding="utf-8") as f:
+        f.write(working_content)
+
+    return working_content

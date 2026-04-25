@@ -93,12 +93,28 @@ function renderScreenCard(item) {
     ? `<div class="card-meta" style="color:var(--text-muted);font-size:11px;">&#8627; child of #${item.parent_id}</div>`
     : '';
 
+  const hypothesisHtml = item.hypothesis
+    ? `<div class="card-hypothesis">&#128161; ${escHtml(item.hypothesis)}</div>`
+    : '';
+
+  const focusHtml = item.focus
+    ? `<div class="card-focus">Focus: ${escHtml(item.focus)}</div>`
+    : '';
+
+  const reviewBadge = item.needs_review
+    ? `<span class="needs-review-badge">needs review</span>`
+    : '';
+
   const variantsHtml = renderVariants(item, 'screen');
 
   const selectedFile = item.selected_file || null;
   const previewBtn = selectedFile
     ? `<button class="btn btn-ghost" onclick="previewFile('${escAttr(selectedFile)}')">Preview selected</button>`
     : '';
+
+  const reviewBtn = item.needs_review
+    ? `<button class="btn btn-ghost" onclick="clearReview(${item.id})">Clear review</button>`
+    : `<button class="btn btn-ghost" onclick="markReview(${item.id})">Mark for review</button>`;
 
   return `
   <div class="card" id="card-${item.id}">
@@ -110,15 +126,19 @@ function renderScreenCard(item) {
         <option value="approved"   ${item.status === 'approved'   ? 'selected' : ''}>approved</option>
         <option value="finalised"  ${item.status === 'finalised'  ? 'selected' : ''}>finalised</option>
       </select>
+      ${reviewBadge}
       <button class="btn-danger btn" onclick="deleteEntity(${item.id})" title="Delete">&#x2715;</button>
     </div>
     ${metaHtml}
+    ${hypothesisHtml}
+    ${focusHtml}
     ${parentHtml}
     <div class="variants-section">
       ${variantsHtml}
     </div>
     <div class="card-footer">
       <button class="btn" onclick="openAddVariantModal(${item.id})">+ Variant</button>
+      ${reviewBtn}
       ${previewBtn}
     </div>
   </div>`;
@@ -147,6 +167,18 @@ function renderComponentCard(item) {
     ? `<div class="card-meta">${escHtml(meta)}</div>`
     : '';
 
+  const hypothesisHtml = item.hypothesis
+    ? `<div class="card-hypothesis">&#128161; ${escHtml(item.hypothesis)}</div>`
+    : '';
+
+  const focusHtml = item.focus
+    ? `<div class="card-focus">Focus: ${escHtml(item.focus)}</div>`
+    : '';
+
+  const reviewBadge = item.needs_review
+    ? `<span class="needs-review-badge">needs review</span>`
+    : '';
+
   const usedIn = item.used_in || [];
   const usedInHtml = usedIn.length > 0
     ? `<div class="linked-tags">${usedIn.map(s => `<span class="linked-tag">${escHtml(s.name)}</span>`).join('')}</div>`
@@ -159,6 +191,10 @@ function renderComponentCard(item) {
     ? `<button class="btn btn-ghost" onclick="previewFile('${escAttr(selectedFile)}')">Preview selected</button>`
     : '';
 
+  const reviewBtn = item.needs_review
+    ? `<button class="btn btn-ghost" onclick="clearReview(${item.id})">Clear review</button>`
+    : `<button class="btn btn-ghost" onclick="markReview(${item.id})">Mark for review</button>`;
+
   return `
   <div class="card" id="card-${item.id}">
     <div class="card-header">
@@ -169,9 +205,12 @@ function renderComponentCard(item) {
         <option value="approved"   ${item.status === 'approved'   ? 'selected' : ''}>approved</option>
         <option value="finalised"  ${item.status === 'finalised'  ? 'selected' : ''}>finalised</option>
       </select>
+      ${reviewBadge}
       <button class="btn-danger btn" onclick="deleteEntity(${item.id})" title="Delete">&#x2715;</button>
     </div>
     ${metaHtml}
+    ${hypothesisHtml}
+    ${focusHtml}
     <div class="linked-section">
       <div class="linked-heading">Used in</div>
       ${usedInHtml}
@@ -182,6 +221,7 @@ function renderComponentCard(item) {
     <div class="card-footer">
       <button class="btn" onclick="openAddVariantModal(${item.id})">+ Variant</button>
       <button class="btn" onclick="openLinkScreenModal(${item.id})">+ Link screen</button>
+      ${reviewBtn}
       ${previewBtn}
     </div>
   </div>`;
@@ -210,6 +250,18 @@ function renderFlowCard(item) {
     ? `<div class="card-meta">${escHtml(meta)}</div>`
     : '';
 
+  const hypothesisHtml = item.hypothesis
+    ? `<div class="card-hypothesis">&#128161; ${escHtml(item.hypothesis)}</div>`
+    : '';
+
+  const focusHtml = item.focus
+    ? `<div class="card-focus">Focus: ${escHtml(item.focus)}</div>`
+    : '';
+
+  const reviewBadge = item.needs_review
+    ? `<span class="needs-review-badge">needs review</span>`
+    : '';
+
   const screens = item.screens || [];
   const screenTreeHtml = renderFlowScreenTree(screens);
 
@@ -225,6 +277,10 @@ function renderFlowCard(item) {
     ? `<button class="btn" onclick="openFlowTree(${item.id}, '${escAttr(item.name)}', JSON.parse(this.dataset.screens))" data-screens="${escAttr(JSON.stringify(screens))}">View tree →</button>`
     : '';
 
+  const reviewBtn = item.needs_review
+    ? `<button class="btn btn-ghost" onclick="clearReview(${item.id})">Clear review</button>`
+    : `<button class="btn btn-ghost" onclick="markReview(${item.id})">Mark for review</button>`;
+
   return `
   <div class="card" id="card-${item.id}">
     <div class="card-header">
@@ -237,9 +293,12 @@ function renderFlowCard(item) {
         <option value="approved"   ${item.status === 'approved'   ? 'selected' : ''}>approved</option>
         <option value="finalised"  ${item.status === 'finalised'  ? 'selected' : ''}>finalised</option>
       </select>
+      ${reviewBadge}
       <button class="btn-danger btn" onclick="deleteEntity(${item.id})" title="Delete">&#x2715;</button>
     </div>
     ${metaHtml}
+    ${hypothesisHtml}
+    ${focusHtml}
     ${screenTreeHtml}
     <div class="variants-section">
       ${variantsHtml}
@@ -248,6 +307,7 @@ function renderFlowCard(item) {
       <button class="btn" onclick="openAddVariantModal(${item.id})">+ Variant</button>
       <button class="btn" onclick="openLinkScreenModal(${item.id})">+ Link screen</button>
       ${viewTreeBtn}
+      ${reviewBtn}
       ${previewBtn}
     </div>
   </div>`;
@@ -836,6 +896,24 @@ async function editVariantRationale(variantId, entityType) {
   const next = prompt('Design rationale (why this variant):', current);
   if (next === null) return;
   await patchVariant(variantId, entityType, { rationale: next.trim() || null });
+}
+
+async function markReview(entityId) {
+  await fetch(`/api/${state.section}/${entityId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ needs_review: 1 }),
+  });
+  loadSection();
+}
+
+async function clearReview(entityId) {
+  await fetch(`/api/${state.section}/${entityId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ needs_review: 0 }),
+  });
+  loadSection();
 }
 
 function escHtml(str) {

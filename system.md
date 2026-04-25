@@ -22,6 +22,14 @@ The `<!-- DECISIONS-START -->` / `<!-- DECISIONS-END -->` block is managed by `c
 
 ---
 
+## Global Rules
+
+<!-- GLOBAL-RULES-START -->
+<!-- Add shared design tokens, constraints, and rules here. -->
+<!-- GLOBAL-RULES-END -->
+
+---
+
 ## Guidelines
 
 <!-- Add typography, color, spacing, and interaction guidelines here -->
@@ -31,3 +39,10 @@ The `<!-- DECISIONS-START -->` / `<!-- DECISIONS-END -->` block is managed by `c
 ## Component Notes
 
 <!-- Add per-component notes here -->
+
+---
+
+## Pending
+
+<!-- PENDING-START -->
+<!-- PENDING-END -->

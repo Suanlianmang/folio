@@ -75,6 +75,10 @@ _RE_FLOW_VAR_SEL = re.compile(r"^/api/flow-variants/(\d+)/select$")
 _RE_FLOW_VAR     = re.compile(r"^/api/flow-variants/(\d+)$")
 _RE_FLOW_LINK    = re.compile(r"^/api/flows/(\d+)/link-screen$")
 
+_RE_SCREEN_DELTAS    = re.compile(r"^/api/screens/(\d+)/deltas$")
+_RE_COMPONENT_DELTAS = re.compile(r"^/api/components/(\d+)/deltas$")
+_RE_FLOW_DELTAS      = re.compile(r"^/api/flows/(\d+)/deltas$")
+
 
 class FolioHandler(BaseHTTPRequestHandler):
 
@@ -198,6 +202,21 @@ class FolioHandler(BaseHTTPRequestHandler):
             self._send_json(db.list_flows())
             return
 
+        match = _RE_SCREEN_DELTAS.match(path)
+        if match:
+            self._send_json(db.list_deltas("screen", int(match.group(1))))
+            return
+
+        match = _RE_COMPONENT_DELTAS.match(path)
+        if match:
+            self._send_json(db.list_deltas("component", int(match.group(1))))
+            return
+
+        match = _RE_FLOW_DELTAS.match(path)
+        if match:
+            self._send_json(db.list_deltas("flow", int(match.group(1))))
+            return
+
         self._not_found()
 
     # ------------------------------------------------------------------
@@ -248,6 +267,21 @@ class FolioHandler(BaseHTTPRequestHandler):
         match = _RE_SCREENSHOT.match(path)
         if match:
             self._handle_upload_screenshot(int(match.group(1)))
+            return
+
+        match = _RE_SCREEN_DELTAS.match(path)
+        if match:
+            self._handle_add_delta("screen", int(match.group(1)))
+            return
+
+        match = _RE_COMPONENT_DELTAS.match(path)
+        if match:
+            self._handle_add_delta("component", int(match.group(1)))
+            return
+
+        match = _RE_FLOW_DELTAS.match(path)
+        if match:
+            self._handle_add_delta("flow", int(match.group(1)))
             return
 
         self._not_found()
@@ -403,6 +437,25 @@ class FolioHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, 400)
             return
         self._send_json(result)
+
+    def _handle_add_delta(self, entity_type: str, entity_id: int) -> None:
+        assert entity_type in {"screen", "component", "flow"}, f"Invalid entity_type: {entity_type!r}"
+        assert entity_id > 0, "entity_id must be positive"
+        data = self._read_json()
+        try:
+            delta = db.add_delta(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                type=data.get("type", "other"),
+                target=data.get("target"),
+                from_val=data.get("from_val"),
+                to_val=data.get("to_val"),
+                reason=data.get("reason"),
+            )
+        except (ValueError, AssertionError) as exc:
+            self._send_json({"error": str(exc)}, 400)
+            return
+        self._send_json(delta, 201)
 
     def _handle_upload_screenshot(self, variant_id: int) -> None:
         assert variant_id > 0, "variant_id must be positive"

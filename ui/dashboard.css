@@ -618,3 +618,31 @@
     font-weight: 600;
     flex-shrink: 0;
   }
+
+  /* ---------- needs-review / hypothesis / focus ---------- */
+
+  .needs-review-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 100px;
+    background: #5a2800;
+    color: #f0a060;
+    border: 1px solid #7a3800;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    flex-shrink: 0;
+  }
+
+  .card-hypothesis {
+    padding: 6px 16px 0;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  .card-focus {
+    padding: 4px 16px 0;
+    font-size: 11px;
+    color: #7a9a6a;
+    font-weight: 500;
+  }
