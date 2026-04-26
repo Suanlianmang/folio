@@ -44,12 +44,22 @@ folio init                   # create .folio/, seed from design/ if present
 folio sync-system            # write approved/finalised decisions into .folio/system.md
 ```
 
+### Orientation
+
+```sh
+folio tree                   # project overview — screens, components, flows with status
+folio tree --full            # full context: rationale, all variants, last 3 changes per item
+```
+
+`folio tree --full` is the single command to orient Claude at the start of a session. It replaces running `folio context` per item.
+
 ### Dashboard
 
 ```sh
 folio serve                  # start dashboard at http://localhost:7842
 folio serve --port 8080      # custom port
 folio serve --stop           # stop the running server
+folio serve --restart        # stop running server and restart (picks up folio update)
 ```
 
 The dashboard now includes:
@@ -79,13 +89,18 @@ folio screens move-variant --variant-id 3 --to-screen 2
 
 ### Components
 
+Components are **late extractions** — register one only after the same UI pattern is confirmed in 2+ approved or finalised screens. `folio components add` enforces this and exits with a warning if fewer than 2 approved/finalised screens exist. Use `--force` to bypass.
+
+`folio tree` flags components with fewer than 2 linked screens as `[speculative]`.
+
 ```sh
 folio components list
-folio components add --name "Button"
+folio components add --name "Button"           # blocked if <2 approved/finalised screens
+folio components add --name "Button" --force   # bypass guard
 folio components show --id 1
 folio components set-status --id 1 --status approved
 folio components set-rationale --id 1 --rationale "..."
-folio components link --id 1 --screen 2                  # record component used in screen
+folio components link --id 1 --screen 2        # record component used in screen
 folio components unlink --id 1 --screen 2
 folio components select-variant --variant-id 4
 ```
@@ -109,6 +124,7 @@ One-line iteration notes attached to any entity. Feeds `folio suggest` automatic
 
 ```sh
 folio log --type screen --id 1 "removed thread strips — testing reading focus"
+folio log --type screen --id 1 --variant-id 3 "scoped note on a specific variant"
 folio log --type component --id 2 "tightened padding to 12px"
 ```
 
@@ -132,6 +148,8 @@ Captures the selected variant file using headless Chrome. Requires Google Chrome
 folio screenshot --type screen --id 1
 folio screenshot --type screen --id 1 --width 1440 --height 900
 ```
+
+When the folio server is running, screenshots are taken via `http://localhost:7842/design/…` so `<link rel="folio-component">` includes are inlined correctly. If the server is not running, folio falls back to a `file://` URI and warns that component includes will be missing.
 
 Screenshot saved to `.folio/screenshots/` and recorded on the variant.
 
@@ -157,6 +175,18 @@ folio sync-system
 # Open dashboard to review all items
 folio serve
 ```
+
+## Component reuse
+
+Screen variants can reference shared components instead of copy-pasting HTML/CSS/JS:
+
+```html
+<link rel="folio-component" href="compose.html">
+```
+
+The folio server inlines the referenced file at serve time — works in the preview drawer, compare modal, and `folio screenshot`. Components can reference other components (up to 10 levels deep).
+
+Only use this after the pattern is confirmed in 2+ finalised screens — not speculatively.
 
 ## Project structure
 

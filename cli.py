@@ -91,8 +91,10 @@ def _print_screen_detail(screen: dict) -> None:
 
 def _print_component_summary(component: dict) -> None:
     """Print one-line component summary with indented variants."""
-    print(f"  #{component['id']} [component] {component['name']} ({component['status']})")
     used_in = component.get("used_in", [])
+    n_used = len(used_in)
+    reuse_tag = f"  ⚠ used in {n_used} screen{'s' if n_used != 1 else ''}" if n_used < 2 else f"  used in {n_used} screens"
+    print(f"  #{component['id']} [component] {component['name']} ({component['status']}){reuse_tag}")
     if used_in:
         names = ", ".join(s["name"] for s in used_in)
         print(f"      Used in: {names}")
@@ -291,6 +293,20 @@ def _cmd_screenshot(args: argparse.Namespace) -> None:
     height = getattr(args, "height", 800)
     out    = db.SCREENSHOTS_DIR / f"{entity_type}-{entity_id}.png"
 
+    url = design_file.as_uri()
+    extra_args: list[str] = []
+    if _PID_FILE.exists():
+        try:
+            pid = int(_PID_FILE.read_text().strip())
+            os.kill(pid, 0)
+            port = int(os.environ.get("FOLIO_PORT", "7842"))
+            url = f"http://localhost:{port}/design/{selected_file}"
+            extra_args = ["--virtual-time-budget=5000"]
+        except (ProcessLookupError, ValueError):
+            print("Warning: server not running — component includes will not be inlined.")
+    else:
+        print("Warning: server not running — component includes will not be inlined.")
+
     cmd = [
         chrome,
         "--headless=new",
@@ -298,7 +314,8 @@ def _cmd_screenshot(args: argparse.Namespace) -> None:
         "--disable-gpu",
         f"--window-size={width},{height}",
         f"--screenshot={out}",
-        design_file.as_uri(),
+        *extra_args,
+        url,
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -409,8 +426,13 @@ def _cmd_context(args: argparse.Namespace) -> None:
     else:
         print("  (none)")
 
+    if entity_type == "component":
+        print()
+        print("Rule: components are late extractions — register only when the same UI is confirmed in 2+ approved/finalised screens.")
 
-def _cmd_tree(_args: argparse.Namespace) -> None:
+
+def _cmd_tree(args: argparse.Namespace) -> None:
+    full       = getattr(args, "full", False)
     screens    = db.list_screens()
     components = db.list_components()
     flows      = db.list_flows()
@@ -448,6 +470,23 @@ def _cmd_tree(_args: argparse.Namespace) -> None:
         if comps:
             comp_str = ", ".join(f"{c['name']} (#{c['id']})" for c in comps)
             print(f"{sub}Components: {comp_str}")
+        if full:
+            if screen.get("rationale"):
+                print(f"{sub}Rationale: {screen['rationale']}")
+            for v in variants:
+                sel = "●" if v["file"] == screen.get("selected_file") else " "
+                lbl = f"  [{v['label']}]" if v.get("label") else ""
+                rat = f"  — {v['rationale']}" if v.get("rationale") else ""
+                flg = f"  ⚑ {v.get('flag_reason') or 'flagged'}" if v.get("flag") else ""
+                print(f"{sub}{sel} {v['file']}{lbl}{rat}{flg}")
+            deltas = db.list_deltas("screen", screen["id"], limit=3)
+            if deltas:
+                print(f"{sub}Recent changes:")
+                for d in deltas:
+                    date_str = (d.get("created_at") or "")[:10]
+                    reason   = d.get("reason") or d.get("target") or d["type"]
+                    outcome  = f"  → {d['outcome']}" if d.get("outcome") else ""
+                    print(f"{sub}  {date_str}  {reason}{outcome}")
         for child in by_parent.get(screen["id"], []):
             _print_screen_node(child, indent + 1)
 
@@ -473,17 +512,35 @@ def _cmd_tree(_args: argparse.Namespace) -> None:
                 var_str = f"  ({n_var} variant{'s' if n_var != 1 else ''}"
                 var_str += f", {n_flagged} flagged" if n_flagged else ""
                 var_str += ")"
-            print(f"  #{c['id']}  [{c['status']}]  {c['name']}{file_str}{var_str}")
+            used_in = c.get("used_in", [])
+            spec_tag = "  [speculative]" if len(used_in) < 2 else ""
+            print(f"  #{c['id']}  [{c['status']}]  {c['name']}{file_str}{var_str}{spec_tag}")
             if c.get("hypothesis"):
                 print(f"      Hypothesis: {c['hypothesis']}")
             if c.get("focus"):
                 print(f"      Focus: {c['focus']}")
             if c.get("needs_review"):
                 print(f"      needs-review")
-            used_in = c.get("used_in", [])
             if used_in:
                 used_str = ", ".join(f"{s['name']} (#{s['id']})" for s in used_in)
                 print(f"      Used in: {used_str}")
+            if full:
+                if c.get("rationale"):
+                    print(f"      Rationale: {c['rationale']}")
+                for v in variants:
+                    sel = "●" if v["file"] == c.get("selected_file") else " "
+                    lbl = f"  [{v['label']}]" if v.get("label") else ""
+                    rat = f"  — {v['rationale']}" if v.get("rationale") else ""
+                    flg = f"  ⚑ {v.get('flag_reason') or 'flagged'}" if v.get("flag") else ""
+                    print(f"      {sel} {v['file']}{lbl}{rat}{flg}")
+                deltas = db.list_deltas("component", c["id"], limit=3)
+                if deltas:
+                    print(f"      Recent changes:")
+                    for d in deltas:
+                        date_str = (d.get("created_at") or "")[:10]
+                        reason   = d.get("reason") or d.get("target") or d["type"]
+                        outcome  = f"  → {d['outcome']}" if d.get("outcome") else ""
+                        print(f"          {date_str}  {reason}{outcome}")
     else:
         print("  (none)")
 
@@ -511,6 +568,23 @@ def _cmd_tree(_args: argparse.Namespace) -> None:
             linked = f.get("screens", [])
             if linked:
                 print(f"      Screens: {' → '.join(s['name'] for s in linked)}")
+            if full:
+                if f.get("rationale"):
+                    print(f"      Rationale: {f['rationale']}")
+                for v in variants:
+                    sel = "●" if v["file"] == f.get("selected_file") else " "
+                    lbl = f"  [{v['label']}]" if v.get("label") else ""
+                    rat = f"  — {v['rationale']}" if v.get("rationale") else ""
+                    flg = f"  ⚑ {v.get('flag_reason') or 'flagged'}" if v.get("flag") else ""
+                    print(f"      {sel} {v['file']}{lbl}{rat}{flg}")
+                deltas = db.list_deltas("flow", f["id"], limit=3)
+                if deltas:
+                    print(f"      Recent changes:")
+                    for d in deltas:
+                        date_str = (d.get("created_at") or "")[:10]
+                        reason   = d.get("reason") or d.get("target") or d["type"]
+                        outcome  = f"  → {d['outcome']}" if d.get("outcome") else ""
+                        print(f"          {date_str}  {reason}{outcome}")
     else:
         print("  (none)")
 
@@ -707,6 +781,21 @@ def _cmd_serve(args: argparse.Namespace) -> None:
             _PID_FILE.unlink(missing_ok=True)
             print(f"Process {pid} not found — PID file removed.")
         return
+
+    if getattr(args, "restart", False) and _PID_FILE.exists():
+        try:
+            pid = int(_PID_FILE.read_text().strip())
+            os.kill(pid, _signal.SIGTERM)
+            for _ in range(30):
+                import time as _time
+                _time.sleep(0.1)
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+        except (ProcessLookupError, ValueError):
+            pass
+        _PID_FILE.unlink(missing_ok=True)
 
     if _PID_FILE.exists():
         pid = _PID_FILE.read_text().strip()
@@ -984,6 +1073,16 @@ def _dispatch_components(args: argparse.Namespace) -> None:
             _print_component_summary(component)
 
     elif command == "add":
+        if not getattr(args, "force", False):
+            screens = db.list_screens()
+            finalized = [s for s in screens if s.get("status") in ("approved", "finalised")]
+            if len(finalized) < 2:
+                print(
+                    "Warning: fewer than 2 approved/finalised screens exist.\n"
+                    "Components should be extracted only when the same UI is confirmed in 2+ screens.\n"
+                    "Use --force to register anyway."
+                )
+                sys.exit(1)
         component = db.create_component(
             name=args.name,
             description=getattr(args, "description", None),
@@ -1432,6 +1531,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--description")
     p.add_argument("--usage")
     p.add_argument("--file", help="First variant file (optional)")
+    p.add_argument("--force", action="store_true", help="Skip late-extraction guard")
 
     p = components_sub.add_parser("show", help="Show full component detail")
     p.add_argument("--id", type=int, required=True)
@@ -1575,6 +1675,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_serve = sub.add_parser("serve", help="Start the dashboard server")
     p_serve.add_argument("--port", type=int, default=7842)
     p_serve.add_argument("--stop", action="store_true", help="Stop the running server")
+    p_serve.add_argument("--restart", action="store_true", help="Stop running server and restart")
 
     p_av = sub.add_parser("add-variant", help="Add a variant to any item type")
     p_av.add_argument("--type", required=True, choices=["screen", "component", "flow"])
@@ -1595,7 +1696,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ctx.add_argument("--type", required=True, choices=["screen", "component", "flow"])
     p_ctx.add_argument("--id", type=int, required=True)
 
-    sub.add_parser("tree", help="Show project tree")
+    p_tree = sub.add_parser("tree", help="Show project tree")
+    p_tree.add_argument("--full", action="store_true", help="Include rationale, variants, and recent changes per item")
 
     p_exp = sub.add_parser("explain", help="Show reorientation doc for a screen/component/flow")
     p_exp.add_argument("--type", required=True, choices=["screen", "component", "flow"])

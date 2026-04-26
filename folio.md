@@ -63,6 +63,14 @@ folio tree
 
 This gives a complete project overview in one shot. Use it to understand what exists before touching anything. Do not run `screens list` / `components list` / `flows list` separately — `folio tree` replaces all three.
 
+If resuming after a gap or starting a new session with existing work, use `--full` instead:
+
+```bash
+folio tree --full
+```
+
+This adds rationale, all variants with their labels and rationale, and last 3 changes per item — everything needed to orient without running `folio context` per item.
+
 Read `.folio/system.md` for approved decisions and global rules.
 
 ---
@@ -246,6 +254,7 @@ Never report a UI fix as done without a screenshot.
 ```bash
 # Orientation
 folio tree
+folio tree --full    # full context: rationale, all variants, last 3 changes per item
 folio context --type screen|component|flow --id N
 folio explain --type screen|component|flow --id N
 folio suggest --type screen|component|flow --id N
@@ -276,7 +285,7 @@ folio screens unflag-variant --variant-id N
 
 # Components
 folio components list
-folio components add --name "..."
+folio components add --name "..." [--force]
 folio components show --id N
 folio components set-status --id N --status approved
 folio components set-rationale --id N --rationale "..."
@@ -319,6 +328,7 @@ folio screenshot --type screen|component|flow --id N [--width 1280] [--height 80
 folio sync-system
 folio serve [--port N]
 folio serve --stop
+folio serve --restart
 folio update
 ```
 
@@ -357,6 +367,27 @@ Dashboard features:
 
 ---
 
+## Components — late extraction rule
+
+**Components are extracted late, not upfront.**
+
+Design happens at the screen level. Extract a component only when the same UI pattern is confirmed in 2+ approved or finalised screens. Registering a component speculatively (before that confirmation) fights the preview mechanics and produces fragments with no real benefit.
+
+The folio CLI enforces this:
+
+```bash
+folio components add --name "..."         # blocked if <2 approved/finalised screens
+folio components add --name "..." --force  # bypass guard when you know what you're doing
+```
+
+`folio tree` flags components with fewer than 2 linked screens as `[speculative]`.  
+`folio components list` shows a `⚠` reuse count on each component.  
+`folio context --type component` prints the rule as a reminder every pass.
+
+**Folio component registrations = approved pattern records + agent style reference**, not speculative extractions.
+
+---
+
 ## Component reuse (server-side include)
 
 Screen variants can reference shared components instead of copy-pasting HTML/CSS/JS. Add to any screen HTML file:
@@ -366,6 +397,8 @@ Screen variants can reference shared components instead of copy-pasting HTML/CSS
 ```
 
 The folio server inlines the referenced file at serve time — works in the preview drawer, compare modal, and `folio screenshot`. Components can reference other components (up to 10 levels deep). If the file is not found, an HTML comment is injected and a warning printed to the server log.
+
+Only use `<link rel="folio-component">` when reuse is confirmed (same UI in 2+ finalised screens) — not speculatively.
 
 When writing new screen variants, always check if approved components exist (`folio components list`) — reference them via `<link rel="folio-component">` instead of reimplementing.
 
