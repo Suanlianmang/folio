@@ -295,17 +295,29 @@ def _cmd_screenshot(args: argparse.Namespace) -> None:
 
     url = design_file.as_uri()
     extra_args: list[str] = []
+    js_injection  = getattr(args, "js", None)
+    cls_injection = getattr(args, "classes", [])
     if _PID_FILE.exists():
         try:
             pid = int(_PID_FILE.read_text().strip())
             os.kill(pid, 0)
             port = int(os.environ.get("FOLIO_PORT", "7842"))
-            url = f"http://localhost:{port}/design/{selected_file}"
+            base_url = f"http://localhost:{port}/design/{selected_file}"
+            from urllib.parse import urlencode, quote
+            params: list[tuple[str, str]] = []
+            for cls_spec in cls_injection:
+                params.append(("class", cls_spec))
+            if js_injection:
+                params.append(("js", js_injection))
+            url = base_url + ("?" + urlencode(params) if params else "")
             extra_args = ["--virtual-time-budget=5000"]
         except (ProcessLookupError, ValueError):
             print("Warning: server not running — component includes will not be inlined.")
     else:
         print("Warning: server not running — component includes will not be inlined.")
+    if (js_injection or cls_injection) and url.startswith("file://"):
+        print("Error: --js / --class require the folio server to be running.")
+        sys.exit(1)
 
     cmd = [
         chrome,
@@ -1691,6 +1703,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sc.add_argument("--id", type=int, required=True)
     p_sc.add_argument("--width",  type=int, default=1280)
     p_sc.add_argument("--height", type=int, default=800)
+    p_sc.add_argument("--js", dest="js", default=None,
+                      help="JS to execute before capture (server must be running)")
+    p_sc.add_argument("--class", dest="classes", action="append", default=[],
+                      metavar="SELECTOR:CLASS",
+                      help="Add class to element before capture, e.g. .list-pane:select-mode (repeatable)")
 
     p_ctx = sub.add_parser("context", help="Show context for a screen/component/flow")
     p_ctx.add_argument("--type", required=True, choices=["screen", "component", "flow"])

@@ -325,6 +325,8 @@ folio log --type screen|component|flow --id N --variant-id N "what changed and w
 folio add-variant --type screen|component|flow --id N --file "file.html" [--label "..."] [--rationale "..."]
 # Note: --file accepts absolute paths — folio copies the file into .folio/design/ automatically
 folio screenshot --type screen|component|flow --id N [--width 1280] [--height 800]
+folio screenshot --type screen --id N --class ".selector:classname"          # add class before capture (repeatable)
+folio screenshot --type screen --id N --js "document.querySelector(...).classList.add('expanded')"  # inject JS before capture
 folio sync-system
 folio serve [--port N]
 folio serve --stop
@@ -349,6 +351,29 @@ folio record-outcome → capture the result (only if using screens change)
 
 If stuck: `folio suggest` → paste prompt → iterate.
 If re-orienting: `folio explain` → resume from ground truth.
+
+---
+
+## Screenshot dynamic states
+
+To capture a UI state without editing the HTML file, use `--class` or `--js`. Both require the folio server to be running.
+
+**`--class SELECTOR:CLASSNAME`** — adds a class to an element before capture. Repeatable.
+
+```bash
+folio screenshot --type screen --id 1 \
+  --class ".list-pane:select-mode" \
+  --class ".bulk-bar:active"
+```
+
+**`--js JS`** — executes arbitrary JS in the page before capture.
+
+```bash
+folio screenshot --type screen --id 1 \
+  --js "document.querySelector('#headerControls').style.display='none'"
+```
+
+Both flags can be combined. The HTML file is never touched — classes and JS are injected server-side at capture time only.
 
 ---
 

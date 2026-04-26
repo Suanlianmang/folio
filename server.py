@@ -148,7 +148,7 @@ class FolioHandler(BaseHTTPRequestHandler):
         body = path.read_bytes()
         self._send_response_bytes(body, mime, 200)
 
-    def _serve_design_file(self, path: Path) -> None:
+    def _serve_design_file(self, path: Path, query: str = "") -> None:
         if not path.exists():
             self._not_found()
             return
@@ -157,6 +157,25 @@ class FolioHandler(BaseHTTPRequestHandler):
             return
         html = path.read_text(encoding='utf-8')
         html = _resolve_components(html, db.DESIGN_DIR)
+        if query:
+            from urllib.parse import parse_qs
+            qs = parse_qs(query)
+            js_parts: list[str] = []
+            for cls_spec in qs.get("class", []):
+                # format: selector:classname
+                if ":" in cls_spec:
+                    sel, cls = cls_spec.split(":", 1)
+                    js_parts.append(
+                        f"(function(){{var el=document.querySelector({json.dumps(sel)});"
+                        f"if(el)el.classList.add({json.dumps(cls)});}})();"
+                    )
+            for raw_js in qs.get("js", []):
+                js_parts.append(raw_js)
+            if js_parts:
+                injection = "<script>" + "\n".join(js_parts) + "</script>"
+                html = re.sub(r"</body>", injection + "</body>", html, count=1, flags=re.IGNORECASE)
+                if "</body>" not in html.lower():
+                    html += injection
         self._send_html(html)
 
     def _serve_dashboard(self) -> None:
@@ -209,7 +228,7 @@ class FolioHandler(BaseHTTPRequestHandler):
 
         match = _RE_DESIGN.match(path)
         if match:
-            self._serve_design_file(db.DESIGN_DIR / unquote(match.group(1)))
+            self._serve_design_file(db.DESIGN_DIR / unquote(match.group(1)), parsed.query)
             return
 
         match = _RE_SCREENSHOTS.match(path)

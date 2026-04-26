@@ -151,6 +151,19 @@ folio screenshot --type screen --id 1 --width 1440 --height 900
 
 When the folio server is running, screenshots are taken via `http://localhost:7842/design/…` so `<link rel="folio-component">` includes are inlined correctly. If the server is not running, folio falls back to a `file://` URI and warns that component includes will be missing.
 
+**Capturing dynamic states** — add classes or inject JS before capture without touching the HTML file. Requires the server to be running.
+
+```sh
+# Add one or more classes
+folio screenshot --type screen --id 1 \
+  --class ".list-pane:select-mode" \
+  --class ".bulk-bar:active"
+
+# Inject arbitrary JS
+folio screenshot --type screen --id 1 \
+  --js "document.querySelector('#header').style.display='none'"
+```
+
 Screenshot saved to `.folio/screenshots/` and recorded on the variant.
 
 ## Typical workflow
