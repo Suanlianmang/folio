@@ -10,6 +10,8 @@ import os
 import re
 import signal
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -42,6 +44,56 @@ import db
 
 db.configure(Path.cwd())
 
+
+# ---------------------------------------------------------------------------
+# SSE client registry
+# ---------------------------------------------------------------------------
+
+_sse_lock: threading.Lock = threading.Lock()
+_sse_clients: list = []
+
+
+def _sse_watcher() -> None:
+    """Background daemon: polls DESIGN_DIR every 1 s, notifies SSE clients on change."""
+    mtimes: dict = {}
+
+    while True:
+        time.sleep(1)
+        try:
+            current: dict = {}
+            design_dir = db.DESIGN_DIR
+            if design_dir.exists():
+                for entry in design_dir.rglob("*"):
+                    if entry.is_file():
+                        try:
+                            current[str(entry)] = entry.stat().st_mtime
+                        except OSError:
+                            pass
+
+            changed = current != mtimes
+            mtimes = current
+
+            if not changed:
+                continue
+
+            dead: list = []
+            with _sse_lock:
+                clients_snapshot = list(_sse_clients)
+
+            for wfile in clients_snapshot:
+                try:
+                    wfile.write(b"data: reload\n\n")
+                    wfile.flush()
+                except OSError:
+                    dead.append(wfile)
+
+            if dead:
+                with _sse_lock:
+                    for wfile in dead:
+                        if wfile in _sse_clients:
+                            _sse_clients.remove(wfile)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +257,30 @@ class FolioHandler(BaseHTTPRequestHandler):
         # Suppress default Apache-style per-request logging.
         pass
 
+    def _handle_sse_reload(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        with _sse_lock:
+            _sse_clients.append(self.wfile)
+
+        # Block until the client disconnects (write fails).
+        try:
+            while True:
+                time.sleep(1)
+                try:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                except OSError:
+                    break
+        finally:
+            with _sse_lock:
+                if self.wfile in _sse_clients:
+                    _sse_clients.remove(self.wfile)
+
     # ------------------------------------------------------------------
     # GET
     # ------------------------------------------------------------------
@@ -269,6 +345,10 @@ class FolioHandler(BaseHTTPRequestHandler):
         match = _RE_FLOW_DELTAS.match(path)
         if match:
             self._send_json(db.list_deltas("flow", int(match.group(1))))
+            return
+
+        if path == "/sse/reload":
+            self._handle_sse_reload()
             return
 
         self._not_found()
@@ -777,4 +857,8 @@ if __name__ == "__main__":
     print(f"  DB:     {db.DB_PATH}")
     print(f"  Design: {db.DESIGN_DIR}")
     print(f"  System: {db.SYSTEM_MD_PATH}")
+
+    watcher = threading.Thread(target=_sse_watcher, daemon=True, name="folio-watcher")
+    watcher.start()
+
     HTTPServer((host, port), FolioHandler).serve_forever()

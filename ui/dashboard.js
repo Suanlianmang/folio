@@ -17,6 +17,50 @@ window.addEventListener('DOMContentLoaded', () => {
   const meta = document.querySelector('meta[name="folio-project"]');
   const projectName = (meta && meta.content) || document.title || 'Folio';
   titleEl.textContent = projectName;
+
+  // Restore active section + drawer from previous session.
+  try {
+    const saved = JSON.parse(localStorage.getItem('folio_nav') || 'null');
+    if (saved && saved.section) {
+      state.section = saved.section;
+
+      // Activate the matching sidebar button.
+      const sectionBtn = document.querySelector(`.sidebar-tab[data-section="${saved.section}"]`);
+      if (sectionBtn) {
+        document.querySelectorAll('.sidebar-tab').forEach(b => b.classList.remove('active'));
+        sectionBtn.classList.add('active');
+        const titles = { screens: 'Screens', components: 'Components', flows: 'Flows' };
+        const mainTitle = document.getElementById('main-title');
+        if (mainTitle && titles[saved.section]) {
+          mainTitle.textContent = titles[saved.section];
+        }
+        const newItemBtn = document.getElementById('new-item-btn');
+        if (newItemBtn) {
+          newItemBtn.textContent = `+ New ${saved.section.slice(0, -1)}`;
+        }
+      }
+
+      // Re-open preview drawer if it was open.
+      if (saved.drawerSrc) {
+        const drawer = document.getElementById('preview-drawer');
+        const iframe = document.getElementById('preview-iframe');
+        const drawerTitle = document.getElementById('preview-drawer-title');
+        if (drawer && iframe) {
+          iframe.src = saved.drawerSrc;
+          if (drawerTitle && saved.drawerTitle) {
+            drawerTitle.textContent = saved.drawerTitle;
+          }
+          drawer.style.right = '0';
+          const backdrop = document.getElementById('preview-backdrop');
+          if (backdrop) { backdrop.style.display = 'block'; }
+          _previewCurrentFile = saved.drawerTitle || null;
+        }
+      }
+    }
+  } catch (_e) {
+    // Corrupt localStorage — ignore, proceed with defaults.
+  }
+
   loadSection();
 });
 
@@ -46,6 +90,7 @@ function setSection(section, btn) {
   const singular = section.slice(0, -1);
   document.getElementById('new-item-btn').textContent = `+ New ${singular}`;
 
+  _saveNavState();
   loadSection();
 }
 
@@ -606,6 +651,7 @@ function previewFile(filename) {
   title.textContent = filename;
   drawer.style.right = '0';
   document.getElementById('preview-backdrop').style.display = 'block';
+  _saveNavState();
 }
 
 function closePreviewDrawer() {
@@ -614,6 +660,7 @@ function closePreviewDrawer() {
   document.getElementById('preview-backdrop').style.display = 'none';
   setTimeout(() => { document.getElementById('preview-iframe').src = ''; }, 250);
   _previewCurrentFile = null;
+  _saveNavState();
 }
 
 function previewNewTab() {
@@ -1092,3 +1139,43 @@ function escAttr(str) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+
+// ---------------------------------------------------------------------------
+// Nav state persistence
+// ---------------------------------------------------------------------------
+
+function _saveNavState() {
+  const iframe = document.getElementById('preview-iframe');
+  const drawer = document.getElementById('preview-drawer');
+  const drawerOpen = drawer && drawer.style.right === '0px';
+  const titleEl = document.getElementById('preview-drawer-title');
+  localStorage.setItem('folio_nav', JSON.stringify({
+    section:     state.section,
+    drawerSrc:   drawerOpen ? iframe.src : null,
+    drawerTitle: drawerOpen ? (titleEl ? titleEl.textContent : null) : null,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// SSE live reload
+// ---------------------------------------------------------------------------
+
+function _connectSSE() {
+  const es = new EventSource('/sse/reload');
+  es.onmessage = () => {
+    // Re-fetch the data list for current section (updates cards without full reload).
+    loadSection();
+    // If preview drawer is open, reload the iframe in place.
+    const iframe = document.getElementById('preview-iframe');
+    if (iframe && iframe.src) {
+      // Reassigning src forces the iframe to reload that URL only.
+      iframe.src = iframe.src;
+    }
+  };
+  es.onerror = () => {
+    es.close();
+    setTimeout(_connectSSE, 2000);
+  };
+}
+
+_connectSSE();
