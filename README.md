@@ -69,6 +69,17 @@ The dashboard now includes:
 - **Screen components** — screen cards show which components are linked to them
 - **Select-variant prompt** — selecting a variant via the dashboard prompts for rationale immediately
 
+### Inter-screen navigation
+
+Screen HTML files can link to other screens by name using the `/screen/<slug>` route served by the folio dashboard. A slug is the screen name lowercased with spaces and underscores replaced by hyphens — "Email Detail" becomes `/screen/email-detail`.
+
+```html
+<a href="/screen/inbox">← Inbox</a>
+<button onclick="location.href='/screen/review'">Review →</button>
+```
+
+The server resolves the slug to whichever variant is currently selected, so links survive file renames and automatically follow variant selection. Requires `folio serve` to be running.
+
 ### Screens
 
 ```sh
@@ -163,6 +174,8 @@ folio screenshot --type screen --id 1 \
 folio screenshot --type screen --id 1 \
   --js "document.querySelector('#header').style.display='none'"
 ```
+
+JS executes after all page scripts have loaded (`DOMContentLoaded` timing), so it can safely call functions defined in the design file's own scripts.
 
 Screenshot saved to `.folio/screenshots/` and recorded on the variant.
 

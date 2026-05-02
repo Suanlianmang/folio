@@ -63,6 +63,8 @@ folio tree
 
 This gives a complete project overview in one shot. Use it to understand what exists before touching anything. Do not run `screens list` / `components list` / `flows list` separately — `folio tree` replaces all three.
 
+Alternatively, `folio start` gives a focused session brief: needs-review, active hypotheses, open items, and recent accepted/rejected outcomes in one shot.
+
 If resuming after a gap or starting a new session with existing work, use `--full` instead:
 
 ```bash
@@ -95,7 +97,15 @@ Before touching any HTML file, run:
 folio context --type screen|component|flow --id N
 ```
 
-This outputs everything needed in one command: current file, hypothesis, focus area, last 5 changes, variants. **Never** substitute this with `folio screens show` + reading raw HTML + checking system.md separately. `folio context` is the single source of truth for what to work on and why.
+Then **respond to the output before generating anything**:
+
+1. **State constraints** — list which patterns from hypothesis, focus, global rules, and recent changes apply to this iteration. Be explicit: "The hypothesis is X. The focus is Y. These recent rejections apply: Z."
+2. **State the test** — what specific thing is this iteration testing or exploring?
+3. **Only then** write or modify HTML.
+
+This is not optional. Context is the input. Generation without grounding is drift.
+
+If the context ends with `--- GENERATE AGAINST THIS ---`, that is a hard stop — respond to it before proceeding.
 
 Also check for approved components to reuse:
 
@@ -114,10 +124,12 @@ Never reimplement a component that already exists as approved.
 After writing or modifying an HTML file, record what changed using the lightweight log command:
 
 ```bash
-folio log --type screen|component|flow --id N "what changed and why"
+folio log --type screen|component|flow --id N [--outcome accepted|rejected|revised] "what changed and why"
 ```
 
 One line, one string. This feeds `folio suggest` automatically. Use it immediately after every iteration.
+
+Include `--outcome` whenever the result is known — this builds the project's pattern memory.
 
 For structured delta recording (when you need from/to values or specific change types):
 
@@ -253,6 +265,7 @@ Never report a UI fix as done without a screenshot.
 
 ```bash
 # Orientation
+folio start              # session brief: needs-review, hypotheses, open items, recent outcomes
 folio tree
 folio tree --full    # full context: rationale, all variants, last 3 changes per item
 folio context --type screen|component|flow --id N
@@ -318,8 +331,8 @@ folio flows change --id N --type T --target "..." --from "..." --to "..."
 folio flows record-outcome --delta-id N --outcome "..."
 
 # Logging (lightweight, preferred over screens change)
-folio log --type screen|component|flow --id N "what changed and why"
-folio log --type screen|component|flow --id N --variant-id N "what changed and why"  # scoped to a specific variant
+folio log --type screen|component|flow --id N [--outcome accepted|rejected|revised] "what changed and why"
+folio log --type screen|component|flow --id N --variant-id N [--outcome accepted|rejected|revised] "what changed and why"  # scoped to a specific variant
 
 # Shared
 folio add-variant --type screen|component|flow --id N --file "file.html" [--label "..."] [--rationale "..."]
@@ -341,13 +354,16 @@ folio update
 Every design pass follows this exact sequence — no shortcuts:
 
 ```
-folio context        → read current state
-[write / edit HTML]
-folio screenshot     → see actual output
-folio log            → record what changed and why (add --variant-id N to scope to a variant)
+folio context           → read output fully
+[state constraints]     → which patterns apply, what is being tested
+[write / edit HTML]     → generate FROM context, not from scratch
+folio screenshot        → see actual output
+folio log --outcome     → record what changed, why, and outcome (accepted/rejected/revised)
 [user gives feedback]
-folio record-outcome → capture the result (only if using screens change)
+folio record-outcome    → capture the result (only if using screens change)
 ```
+
+The step between `folio context` and writing HTML is not optional. If you cannot state the constraints and the test, run `folio explain` first.
 
 If stuck: `folio suggest` → paste prompt → iterate.
 If re-orienting: `folio explain` → resume from ground truth.
@@ -426,6 +442,22 @@ The folio server inlines the referenced file at serve time — works in the prev
 Only use `<link rel="folio-component">` when reuse is confirmed (same UI in 2+ finalised screens) — not speculatively.
 
 When writing new screen variants, always check if approved components exist (`folio components list`) — reference them via `<link rel="folio-component">` instead of reimplementing.
+
+---
+
+## Inter-screen navigation
+
+Screen HTML files can link to other screens by name using the `/screen/<slug>` route. A slug is the screen name lowercased with spaces and underscores replaced by hyphens — "Email Detail" → `/screen/email-detail`.
+
+The server resolves the slug to whichever variant is currently selected, so links survive file renames and automatically follow variant selection.
+
+```html
+<a href="/screen/inbox">← Inbox</a>
+<button onclick="location.href='/screen/review'">Review →</button>
+<a href="/screen/email-detail" style="text-decoration:none">Open thread</a>
+```
+
+Requires the folio server to be running. Falls back to a 404 if no screen matches the slug or the screen has no variants.
 
 ---
 

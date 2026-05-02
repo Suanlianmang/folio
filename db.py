@@ -226,7 +226,8 @@ def _migrate_entities(conn: sqlite3.Connection) -> None:
 
 
 _NEW_DELTA_COLS = (
-    ("variant_id", "INTEGER"),
+    ("variant_id",   "INTEGER"),
+    ("outcome_type", "TEXT"),
 )
 
 
@@ -372,6 +373,18 @@ def get_screen(screen_id: int) -> dict | None:
     screen["components"] = _fetch_screen_components(conn, screen_id)
     conn.close()
     return screen
+
+
+def get_screen_by_slug(slug: str) -> dict | None:
+    """Find a screen by name slug (lowercased, spaces/underscores → hyphens)."""
+    def _slugify(name: str) -> str:
+        return name.lower().replace(" ", "-").replace("_", "-")
+
+    screens = list_screens()
+    for s in screens:
+        if _slugify(s["name"]) == slug:
+            return s
+    return None
 
 
 def create_screen(
@@ -1181,6 +1194,9 @@ _VALID_ENTITY_TYPES = {"screen", "component", "flow"}
 _VALID_DELTA_TYPES  = {"layout", "copy", "color", "spacing", "interaction", "other"}
 
 
+_VALID_OUTCOME_TYPES = {"accepted", "rejected", "revised"}
+
+
 def add_delta(
     entity_type: str,
     entity_id: int,
@@ -1190,6 +1206,7 @@ def add_delta(
     to_val: str | None = None,
     reason: str | None = None,
     variant_id: int | None = None,
+    outcome_type: str | None = None,
 ) -> dict:
     """Insert a new delta and return it as a dict."""
     assert entity_type in _VALID_ENTITY_TYPES, f"Invalid entity_type: {entity_type!r}"
@@ -1198,14 +1215,16 @@ def add_delta(
     assert type in _VALID_DELTA_TYPES, f"Invalid delta type: {type!r}"
     assert variant_id is None or (isinstance(variant_id, int) and variant_id > 0), \
         f"variant_id must be positive int or None: {variant_id!r}"
+    assert outcome_type is None or outcome_type in _VALID_OUTCOME_TYPES, \
+        f"outcome_type must be one of {sorted(_VALID_OUTCOME_TYPES)} or None: {outcome_type!r}"
 
     conn = get_db()
     cursor = conn.execute(
         """
-        INSERT INTO deltas (entity_type, entity_id, variant_id, type, target, from_val, to_val, reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO deltas (entity_type, entity_id, variant_id, type, target, from_val, to_val, reason, outcome_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (entity_type, entity_id, variant_id, type, target, from_val, to_val, reason),
+        (entity_type, entity_id, variant_id, type, target, from_val, to_val, reason, outcome_type),
     )
     delta_id = cursor.lastrowid
     assert delta_id is not None, "INSERT into deltas returned no rowid"
@@ -1234,6 +1253,31 @@ def list_deltas(entity_type: str, entity_id: int, limit: int | None = None) -> l
         rows = conn.execute(sql + " LIMIT ?", (entity_type, entity_id, limit)).fetchall()
     else:
         rows = conn.execute(sql, (entity_type, entity_id)).fetchall()
+    conn.close()
+    return [_row_to_dict(r) for r in rows]
+
+
+def list_recent_outcome_deltas(
+    outcome_type: str,
+    days: int,
+    limit: int,
+) -> list[dict]:
+    """Return deltas with the given outcome_type created within the last N days, newest first."""
+    assert outcome_type in _VALID_OUTCOME_TYPES, f"Invalid outcome_type: {outcome_type!r}"
+    assert isinstance(days, int) and days > 0, f"days must be positive int: {days!r}"
+    assert isinstance(limit, int) and limit > 0, f"limit must be positive int: {limit!r}"
+
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT * FROM deltas
+        WHERE outcome_type = ?
+          AND created_at >= datetime('now', ? || ' days')
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+        """,
+        (outcome_type, f"-{days}", limit),
+    ).fetchall()
     conn.close()
     return [_row_to_dict(r) for r in rows]
 

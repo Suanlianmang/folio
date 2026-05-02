@@ -379,7 +379,7 @@ def _cmd_context(args: argparse.Namespace) -> None:
     review_label = "yes" if item.get("needs_review") else "no"
     print(f"=== CONTEXT: {label} #{item['id']} — {item['name']} ===")
 
-    # Hypothesis and focus first — they are the active constraints
+    # 1. Hypothesis and focus first — they are the active constraints
     if item.get("hypothesis"):
         print(f"HYPOTHESIS: {item['hypothesis']}")
     if item.get("focus"):
@@ -387,11 +387,7 @@ def _cmd_context(args: argparse.Namespace) -> None:
     if item.get("hypothesis") or item.get("focus"):
         print()
 
-    print(f"Status: {item['status']}  |  Needs review: {review_label}")
-    if item.get("selected_file"):
-        print(f"Selected: {item['selected_file']}")
-
-    # Inject global rules from system.md if markers present.
+    # 2. Global rules from system.md — moved up before status
     if db.SYSTEM_MD_PATH.exists():
         content = db.SYSTEM_MD_PATH.read_text(encoding="utf-8")
         start_marker = "<!-- GLOBAL-RULES-START -->"
@@ -401,11 +397,34 @@ def _cmd_context(args: argparse.Namespace) -> None:
             end_idx   = content.index(end_marker)
             rules_text = content[start_idx:end_idx].strip()
             if rules_text:
-                print()
                 print("--- GLOBAL RULES (from system.md) ---")
                 print(rules_text)
                 print("--------------------------------------")
+                print()
 
+    # 3. Status + selected file
+    print(f"Status: {item['status']}  |  Needs review: {review_label}")
+    if item.get("selected_file"):
+        print(f"Selected: {item['selected_file']}")
+
+    # 4. Variants
+    variants = item.get("variants", [])
+    print()
+    print(f"VARIANTS ({len(variants)}):")
+    if variants:
+        for v in variants:
+            selected_marker = "●" if v["file"] == item.get("selected_file") else " "
+            label_str = f"  [{v['label']}]" if v.get("label") else ""
+            flag_str = f"  — {v['flag']}: {v.get('flag_reason') or ''}" if v.get("flag") else ""
+            print(f"  {selected_marker} {v['file']}{label_str}{flag_str}")
+    else:
+        print("  (none)")
+
+    if entity_type == "component":
+        print()
+        print("Rule: components are late extractions — register only when the same UI is confirmed in 2+ approved/finalised screens.")
+
+    # 5. Recent changes
     deltas = db.list_deltas(entity_type, entity_id, limit=5)
     print()
     print("RECENT CHANGES (last 5):")
@@ -426,21 +445,117 @@ def _cmd_context(args: argparse.Namespace) -> None:
     else:
         print("  (none)")
 
-    variants = item.get("variants", [])
+    # 6. Generation directive
     print()
-    print(f"VARIANTS ({len(variants)}):")
-    if variants:
-        for v in variants:
-            selected_marker = "●" if v["file"] == item.get("selected_file") else " "
-            label_str = f"  [{v['label']}]" if v.get("label") else ""
-            flag_str = f"  — {v['flag']}: {v.get('flag_reason') or ''}" if v.get("flag") else ""
-            print(f"  {selected_marker} {v['file']}{label_str}{flag_str}")
+    print("--- GENERATE AGAINST THIS ---")
+    print("Constraints above are not suggestions. Generate from evidence, not from scratch.")
+    print("State which patterns constrain this iteration before proposing anything.")
+    print("------------------------------")
+
+
+def _cmd_start(_args: argparse.Namespace) -> None:
+    screens    = db.list_screens()
+    components = db.list_components()
+    flows      = db.list_flows()
+
+    print("=== SESSION START ===")
+
+    # --- NEEDS REVIEW ---
+    print()
+    print("NEEDS REVIEW")
+    needs_review_items = []
+    for screen in screens:
+        if screen.get("needs_review"):
+            needs_review_items.append(("screen", screen))
+    for component in components:
+        if component.get("needs_review"):
+            needs_review_items.append(("component", component))
+    for flow in flows:
+        if flow.get("needs_review"):
+            needs_review_items.append(("flow", flow))
+
+    if needs_review_items:
+        for entity_type, item in needs_review_items:
+            hyp_suffix = f" — {item['hypothesis']}" if item.get("hypothesis") else ""
+            print(f"  {entity_type:<10} #{item['id']}  {item['name']}{hyp_suffix}")
     else:
         print("  (none)")
 
-    if entity_type == "component":
-        print()
-        print("Rule: components are late extractions — register only when the same UI is confirmed in 2+ approved/finalised screens.")
+    # --- ACTIVE HYPOTHESES ---
+    print()
+    print("ACTIVE HYPOTHESES")
+    hypothesis_items = []
+    for screen in screens:
+        hypothesis = screen.get("hypothesis")
+        if hypothesis and hypothesis.strip():
+            hypothesis_items.append(("screen", screen))
+    for component in components:
+        hypothesis = component.get("hypothesis")
+        if hypothesis and hypothesis.strip():
+            hypothesis_items.append(("component", component))
+    for flow in flows:
+        hypothesis = flow.get("hypothesis")
+        if hypothesis and hypothesis.strip():
+            hypothesis_items.append(("flow", flow))
+
+    if hypothesis_items:
+        for entity_type, item in hypothesis_items:
+            print(f"  {entity_type:<10} #{item['id']}  {item['name']}  — \"{item['hypothesis']}\"")
+    else:
+        print("  (none)")
+
+    # --- OPEN (no variants yet) ---
+    print()
+    print("OPEN (no variants yet)")
+    open_items = []
+    for screen in screens:
+        if not screen.get("variants"):
+            open_items.append(("screen", screen))
+    for component in components:
+        if not component.get("variants"):
+            open_items.append(("component", component))
+    for flow in flows:
+        if not flow.get("variants"):
+            open_items.append(("flow", flow))
+
+    if open_items:
+        for entity_type, item in open_items:
+            print(f"  {entity_type:<10} #{item['id']}  {item['name']}")
+    else:
+        print("  (none)")
+
+    # --- RECENT REJECTIONS ---
+    print()
+    print("RECENT REJECTIONS (last 7 days)")
+    rejections = db.list_recent_outcome_deltas(outcome_type="rejected", days=7, limit=5)
+    if rejections:
+        for delta in rejections:
+            date_str    = (delta.get("created_at") or "")[:10]
+            entity_type = delta.get("entity_type") or ""
+            entity_id   = delta.get("entity_id") or ""
+            reason      = delta.get("reason") or delta.get("target") or ""
+            print(f"  {date_str}  {entity_type} #{entity_id}  \"{reason}\" → rejected")
+    else:
+        print("  (none)")
+
+    # --- RECENT APPROVALS ---
+    print()
+    print("RECENT APPROVALS (last 7 days)")
+    approvals = db.list_recent_outcome_deltas(outcome_type="accepted", days=7, limit=5)
+    if approvals:
+        for delta in approvals:
+            date_str    = (delta.get("created_at") or "")[:10]
+            entity_type = delta.get("entity_type") or ""
+            entity_id   = delta.get("entity_id") or ""
+            reason      = delta.get("reason") or delta.get("target") or ""
+            print(f"  {date_str}  {entity_type} #{entity_id}  \"{reason}\" → accepted")
+    else:
+        print("  (none)")
+
+    print()
+    print("---")
+    print("Run `folio context --type <type> --id <id>` before iterating on any item.")
+    print("State constraints. State the test. Then generate.")
 
 
 def _cmd_tree(args: argparse.Namespace) -> None:
@@ -740,6 +855,7 @@ def _cmd_log(args: argparse.Namespace) -> None:
     entity_id   = args.id
     message     = args.message
     variant_id  = getattr(args, "variant_id", None)
+    outcome_type = getattr(args, "outcome", None)
 
     if entity_type == "screen":
         item = db.get_screen(entity_id)
@@ -767,11 +883,13 @@ def _cmd_log(args: argparse.Namespace) -> None:
         to_val=None,
         reason=message,
         variant_id=variant_id,
+        outcome_type=outcome_type,
     )
+    outcome_suffix = f"  outcome: {outcome_type}" if outcome_type else ""
     if variant_id is not None:
-        print(f"Logged on {entity_type} #{entity_id} variant #{variant_id}: {message}")
+        print(f"Logged on {entity_type} #{entity_id} variant #{variant_id}: {message}{outcome_suffix}")
     else:
-        print(f"Logged on {entity_type} #{entity_id}: {message}")
+        print(f"Logged on {entity_type} #{entity_id}: {message}{outcome_suffix}")
 
 
 _PID_FILE = Path.home() / ".folio" / "server.pid"
@@ -1680,6 +1798,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--outcome", required=True)
 
     # --- top-level flat commands ---
+    sub.add_parser("start", help="Session brief: needs-review, hypotheses, open items, recent outcomes")
     sub.add_parser("init", help="Init DB, copy system.md, seed from design/")
     sub.add_parser("sync-system", help="Write decisions table to system.md")
     sub.add_parser("update", help="Update folio CLI to latest version")
@@ -1728,6 +1847,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_log.add_argument("--type", required=True, choices=["screen", "component", "flow"])
     p_log.add_argument("--id", type=int, required=True)
     p_log.add_argument("--variant-id", type=int, default=None, dest="variant_id")
+    p_log.add_argument("--outcome", choices=["accepted", "rejected", "revised"], default=None,
+                       help="Outcome of this iteration (optional)")
     p_log.add_argument("message", help="What changed or what you're testing")
 
     return parser
@@ -1770,6 +1891,8 @@ def main() -> None:
             _cmd_suggest(args)
         elif args.group == "log":
             _cmd_log(args)
+        elif args.group == "start":
+            _cmd_start(args)
         else:
             print(f"Error: Unknown group: {args.group!r}")
             sys.exit(1)

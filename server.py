@@ -127,6 +127,8 @@ _RE_FLOW_VAR_SEL = re.compile(r"^/api/flow-variants/(\d+)/select$")
 _RE_FLOW_VAR     = re.compile(r"^/api/flow-variants/(\d+)$")
 _RE_FLOW_LINK    = re.compile(r"^/api/flows/(\d+)/link-screen$")
 
+_RE_SCREEN_SLUG  = re.compile(r"^/screen/([^/]+)$")
+
 _RE_SCREEN_DELTAS    = re.compile(r"^/api/screens/(\d+)/deltas$")
 _RE_COMPONENT_DELTAS = re.compile(r"^/api/components/(\d+)/deltas$")
 _RE_FLOW_DELTAS      = re.compile(r"^/api/flows/(\d+)/deltas$")
@@ -224,7 +226,18 @@ class FolioHandler(BaseHTTPRequestHandler):
             for raw_js in qs.get("js", []):
                 js_parts.append(raw_js)
             if js_parts:
-                injection = "<script>" + "\n".join(js_parts) + "</script>"
+                inner = "\n".join(js_parts)
+                wrapped = (
+                    "(function(){"
+                    "function _fi(){"
+                    + inner
+                    + "}"
+                    "if(document.readyState==='loading'){"
+                    "document.addEventListener('DOMContentLoaded',_fi);"
+                    "}else{_fi();}"
+                    "})();"
+                )
+                injection = "<script>" + wrapped + "</script>"
                 html = re.sub(r"</body>", injection + "</body>", html, count=1, flags=re.IGNORECASE)
                 if "</body>" not in html.lower():
                     html += injection
@@ -318,6 +331,23 @@ class FolioHandler(BaseHTTPRequestHandler):
                 return
             body = db.SYSTEM_MD_PATH.read_text(encoding="utf-8").encode("utf-8")
             self._send_response_bytes(body, "text/plain; charset=utf-8", 200)
+            return
+
+        match = _RE_SCREEN_SLUG.match(path)
+        if match:
+            slug = unquote(match.group(1))
+            screen = db.get_screen_by_slug(slug)
+            if not screen:
+                self._not_found(f"No screen named '{slug}'")
+                return
+            selected = screen.get("selected_file")
+            if not selected:
+                variants = screen.get("variants", [])
+                if not variants:
+                    self._not_found("Screen has no variants")
+                    return
+                selected = variants[0]["file"]
+            self._serve_design_file(db.DESIGN_DIR / selected, parsed.query)
             return
 
         if _RE_SCREENS.match(path):
