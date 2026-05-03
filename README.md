@@ -71,14 +71,14 @@ The dashboard now includes:
 
 ### Inter-screen navigation
 
-Screen HTML files can link to other screens by name using the `/screen/<slug>` route served by the folio dashboard. A slug is the screen name lowercased with spaces and underscores replaced by hyphens — "Email Detail" becomes `/screen/email-detail`.
+Screen HTML files can link to other screens by ID using the `/screen/<id>` route served by the folio dashboard.
 
 ```html
-<a href="/screen/inbox">← Inbox</a>
-<button onclick="location.href='/screen/review'">Review →</button>
+<a href="/screen/2">← Inbox</a>
+<button onclick="location.href='/screen/5'">Review →</button>
 ```
 
-The server resolves the slug to whichever variant is currently selected, so links survive file renames and automatically follow variant selection. Requires `folio serve` to be running.
+The server resolves the ID to whichever variant is currently selected. Requires `folio serve` to be running.
 
 ### Screens
 

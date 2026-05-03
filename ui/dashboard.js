@@ -801,8 +801,8 @@ function openLinkScreenModal(entityId) {
   document.getElementById('modal-title').textContent = 'Link screen';
   document.getElementById('modal-body').innerHTML = `
     <div class="form-field">
-      <label class="form-label">Screen ID <span style="color:#c0392b">*</span></label>
-      <input class="form-input" id="f-screen-id" type="number" placeholder="e.g. 3">
+      <label class="form-label">Screen ID or name <span style="color:#c0392b">*</span></label>
+      <input class="form-input" id="f-screen-id" type="text" placeholder="e.g. 3 or Home">
     </div>`;
 
   document.getElementById('modal-footer').innerHTML = `
@@ -814,18 +814,20 @@ function openLinkScreenModal(entityId) {
 }
 
 async function submitLinkScreen(entityId) {
-  const screenIdRaw = document.getElementById('f-screen-id').value.trim();
-  const screen_id   = parseInt(screenIdRaw, 10);
-
-  if (!screenIdRaw || isNaN(screen_id) || screen_id <= 0) {
-    alert('A valid screen ID is required');
+  const raw = document.getElementById('f-screen-id').value.trim();
+  if (!raw) {
+    alert('A screen ID or name is required');
     return;
   }
+  const numVal = parseInt(raw, 10);
+  const body = (!isNaN(numVal) && String(numVal) === raw)
+    ? { screen_id: numVal }
+    : { screen_name: raw };
 
   const res = await fetch(`/api/${state.section}/${entityId}/link-screen`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ screen_id }),
+    body:    JSON.stringify(body),
   });
 
   if (!res.ok) {

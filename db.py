@@ -375,15 +375,31 @@ def get_screen(screen_id: int) -> dict | None:
     return screen
 
 
-def get_screen_by_slug(slug: str) -> dict | None:
-    """Find a screen by name slug (lowercased, spaces/underscores → hyphens)."""
-    def _slugify(name: str) -> str:
-        return name.lower().replace(" ", "-").replace("_", "-")
 
-    screens = list_screens()
-    for s in screens:
-        if _slugify(s["name"]) == slug:
+def get_screen_by_name(name: str) -> dict | None:
+    """Find a screen by exact name (case-insensitive)."""
+    needle = name.strip().lower()
+    for s in list_screens():
+        if s["name"].lower() == needle:
             return s
+    return None
+
+
+def get_component_by_name(name: str) -> dict | None:
+    """Find a component by exact name (case-insensitive)."""
+    needle = name.strip().lower()
+    for c in list_components():
+        if c["name"].lower() == needle:
+            return c
+    return None
+
+
+def get_flow_by_name(name: str) -> dict | None:
+    """Find a flow by exact name (case-insensitive)."""
+    needle = name.strip().lower()
+    for f in list_flows():
+        if f["name"].lower() == needle:
+            return f
     return None
 
 

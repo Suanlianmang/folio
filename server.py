@@ -127,7 +127,7 @@ _RE_FLOW_VAR_SEL = re.compile(r"^/api/flow-variants/(\d+)/select$")
 _RE_FLOW_VAR     = re.compile(r"^/api/flow-variants/(\d+)$")
 _RE_FLOW_LINK    = re.compile(r"^/api/flows/(\d+)/link-screen$")
 
-_RE_SCREEN_SLUG  = re.compile(r"^/screen/([^/]+)$")
+_RE_SCREEN_SLUG  = re.compile(r"^/screen/(\d+)$")
 
 _RE_SCREEN_DELTAS    = re.compile(r"^/api/screens/(\d+)/deltas$")
 _RE_COMPONENT_DELTAS = re.compile(r"^/api/components/(\d+)/deltas$")
@@ -335,10 +335,9 @@ class FolioHandler(BaseHTTPRequestHandler):
 
         match = _RE_SCREEN_SLUG.match(path)
         if match:
-            slug = unquote(match.group(1))
-            screen = db.get_screen_by_slug(slug)
+            screen = db.get_screen(int(match.group(1)))
             if not screen:
-                self._not_found(f"No screen named '{slug}'")
+                self._not_found(f"No screen with id '{match.group(1)}'")
                 return
             selected = screen.get("selected_file")
             if not selected:
@@ -574,12 +573,26 @@ class FolioHandler(BaseHTTPRequestHandler):
             return
         self._send_json(variant, 201)
 
+    def _resolve_screen_id(self, data: dict) -> tuple[int | None, str | None]:
+        screen_id = data.get("screen_id")
+        if screen_id is not None:
+            if not isinstance(screen_id, int) or screen_id <= 0:
+                return None, "screen_id must be a positive integer"
+            return screen_id, None
+        screen_name = data.get("screen_name")
+        if screen_name:
+            screen = db.get_screen_by_name(screen_name)
+            if screen is None:
+                return None, f"Screen '{screen_name}' not found"
+            return screen["id"], None
+        return None, "screen_id or screen_name is required"
+
     def _handle_link_component_screen(self, component_id: int) -> None:
         assert component_id > 0, "component_id must be positive"
         data = self._read_json()
-        screen_id = data.get("screen_id")
-        if not isinstance(screen_id, int) or screen_id <= 0:
-            self._send_json({"error": "screen_id must be a positive integer"}, 400)
+        screen_id, err = self._resolve_screen_id(data)
+        if err:
+            self._send_json({"error": err}, 400)
             return
         try:
             result = db.link_component_screen(component_id, screen_id)
@@ -591,9 +604,9 @@ class FolioHandler(BaseHTTPRequestHandler):
     def _handle_link_flow_screen(self, flow_id: int) -> None:
         assert flow_id > 0, "flow_id must be positive"
         data = self._read_json()
-        screen_id = data.get("screen_id")
-        if not isinstance(screen_id, int) or screen_id <= 0:
-            self._send_json({"error": "screen_id must be a positive integer"}, 400)
+        screen_id, err = self._resolve_screen_id(data)
+        if err:
+            self._send_json({"error": err}, 400)
             return
         try:
             result = db.link_flow_screen(flow_id, screen_id)

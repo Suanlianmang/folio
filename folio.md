@@ -447,17 +447,17 @@ When writing new screen variants, always check if approved components exist (`fo
 
 ## Inter-screen navigation
 
-Screen HTML files can link to other screens by name using the `/screen/<slug>` route. A slug is the screen name lowercased with spaces and underscores replaced by hyphens — "Email Detail" → `/screen/email-detail`.
+Screen HTML files can link to other screens by ID using the `/screen/<id>` route.
 
-The server resolves the slug to whichever variant is currently selected, so links survive file renames and automatically follow variant selection.
+The server resolves the ID to whichever variant is currently selected, so links survive file renames and automatically follow variant selection.
 
 ```html
-<a href="/screen/inbox">← Inbox</a>
-<button onclick="location.href='/screen/review'">Review →</button>
-<a href="/screen/email-detail" style="text-decoration:none">Open thread</a>
+<a href="/screen/2">← Inbox</a>
+<button onclick="location.href='/screen/5'">Review →</button>
+<a href="/screen/3" style="text-decoration:none">Open thread</a>
 ```
 
-Requires the folio server to be running. Falls back to a 404 if no screen matches the slug or the screen has no variants.
+Requires the folio server to be running. Falls back to a 404 if no screen matches the ID or the screen has no variants.
 
 ---
 

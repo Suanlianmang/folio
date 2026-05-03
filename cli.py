@@ -25,6 +25,45 @@ db.configure(Path.cwd())
 
 
 # ---------------------------------------------------------------------------
+# ID / name resolution helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_screen(val: str) -> int:
+    try:
+        return int(val)
+    except ValueError:
+        pass
+    s = db.get_screen_by_name(val)
+    if s is None:
+        print(f"Error: Screen '{val}' not found.")
+        sys.exit(1)
+    return s["id"]
+
+
+def _resolve_component(val: str) -> int:
+    try:
+        return int(val)
+    except ValueError:
+        pass
+    c = db.get_component_by_name(val)
+    if c is None:
+        print(f"Error: Component '{val}' not found.")
+        sys.exit(1)
+    return c["id"]
+
+
+def _resolve_flow(val: str) -> int:
+    try:
+        return int(val)
+    except ValueError:
+        pass
+    f = db.get_flow_by_name(val)
+    if f is None:
+        print(f"Error: Flow '{val}' not found.")
+        sys.exit(1)
+    return f["id"]
+
+
 # Output helpers — screens
 # ---------------------------------------------------------------------------
 
@@ -1250,15 +1289,19 @@ def _dispatch_components(args: argparse.Namespace) -> None:
         print(f"Component #{component['id']} rationale updated.")
 
     elif command == "link":
-        db.link_component_screen(component_id=args.id, screen_id=args.screen)
-        print(f"Linked component #{args.id} to screen #{args.screen}.")
+        cid = _resolve_component(args.id)
+        sid = _resolve_screen(args.screen)
+        db.link_component_screen(component_id=cid, screen_id=sid)
+        print(f"Linked component #{cid} to screen #{sid}.")
 
     elif command == "unlink":
-        removed = db.unlink_component_screen(component_id=args.id, screen_id=args.screen)
+        cid = _resolve_component(args.id)
+        sid = _resolve_screen(args.screen)
+        removed = db.unlink_component_screen(component_id=cid, screen_id=sid)
         if not removed:
-            print(f"Error: Link between component #{args.id} and screen #{args.screen} not found.")
+            print(f"Error: Link between component #{cid} and screen #{sid} not found.")
             sys.exit(1)
-        print(f"Unlinked component #{args.id} from screen #{args.screen}.")
+        print(f"Unlinked component #{cid} from screen #{sid}.")
 
     elif command == "select-variant":
         variant_id = args.variant_id
@@ -1415,15 +1458,19 @@ def _dispatch_flows(args: argparse.Namespace) -> None:
         print(f"Flow #{flow['id']} rationale updated.")
 
     elif command == "link":
-        db.link_flow_screen(flow_id=args.id, screen_id=args.screen)
-        print(f"Linked flow #{args.id} to screen #{args.screen}.")
+        fid = _resolve_flow(args.id)
+        sid = _resolve_screen(args.screen)
+        db.link_flow_screen(flow_id=fid, screen_id=sid)
+        print(f"Linked flow #{fid} to screen #{sid}.")
 
     elif command == "unlink":
-        removed = db.unlink_flow_screen(flow_id=args.id, screen_id=args.screen)
+        fid = _resolve_flow(args.id)
+        sid = _resolve_screen(args.screen)
+        removed = db.unlink_flow_screen(flow_id=fid, screen_id=sid)
         if not removed:
-            print(f"Error: Link between flow #{args.id} and screen #{args.screen} not found.")
+            print(f"Error: Link between flow #{fid} and screen #{sid} not found.")
             sys.exit(1)
-        print(f"Unlinked flow #{args.id} from screen #{args.screen}.")
+        print(f"Unlinked flow #{fid} from screen #{sid}.")
 
     elif command == "select-variant":
         variant_id = args.variant_id
@@ -1675,12 +1722,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rationale", required=True)
 
     p = components_sub.add_parser("link", help="Link component to a screen")
-    p.add_argument("--id", type=int, required=True, help="Component ID")
-    p.add_argument("--screen", type=int, required=True, help="Screen ID")
+    p.add_argument("--id", required=True, help="Component ID or name")
+    p.add_argument("--screen", required=True, help="Screen ID or name")
 
     p = components_sub.add_parser("unlink", help="Unlink component from a screen")
-    p.add_argument("--id", type=int, required=True, help="Component ID")
-    p.add_argument("--screen", type=int, required=True, help="Screen ID")
+    p.add_argument("--id", required=True, help="Component ID or name")
+    p.add_argument("--screen", required=True, help="Screen ID or name")
 
     p = components_sub.add_parser("select-variant", help="Set variant as selected on parent component")
     p.add_argument("--variant-id", type=int, default=None, dest="variant_id")
@@ -1748,12 +1795,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rationale", required=True)
 
     p = flows_sub.add_parser("link", help="Link a screen to a flow")
-    p.add_argument("--id", type=int, required=True, help="Flow ID")
-    p.add_argument("--screen", type=int, required=True, help="Screen ID")
+    p.add_argument("--id", required=True, help="Flow ID or name")
+    p.add_argument("--screen", required=True, help="Screen ID or name")
 
     p = flows_sub.add_parser("unlink", help="Unlink a screen from a flow")
-    p.add_argument("--id", type=int, required=True, help="Flow ID")
-    p.add_argument("--screen", type=int, required=True, help="Screen ID")
+    p.add_argument("--id", required=True, help="Flow ID or name")
+    p.add_argument("--screen", required=True, help="Screen ID or name")
 
     p = flows_sub.add_parser("select-variant", help="Set variant as selected on parent flow")
     p.add_argument("--variant-id", type=int, default=None, dest="variant_id")
