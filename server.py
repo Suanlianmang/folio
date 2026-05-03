@@ -12,7 +12,7 @@ import signal
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -904,4 +904,4 @@ if __name__ == "__main__":
     watcher = threading.Thread(target=_sse_watcher, daemon=True, name="folio-watcher")
     watcher.start()
 
-    HTTPServer((host, port), FolioHandler).serve_forever()
+    ThreadingHTTPServer((host, port), FolioHandler).serve_forever()
